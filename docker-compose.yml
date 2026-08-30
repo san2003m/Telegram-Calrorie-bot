@@ -48,8 +48,9 @@ services:
     profiles:
       - tunnel
     command: tunnel --no-autoupdate --loglevel info run
-    environment:
-      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    env_file:
+      - path: .env.tunnel
+        required: false
     depends_on:
       bot:
         condition: service_started

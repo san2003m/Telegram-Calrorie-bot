@@ -125,7 +125,7 @@ Tunnel을 먼저 공개하면 Access 정책을 적용하기 전까지 페이지�
 1. Cloudflare Access에서 `calorie.example.com`을 Self-hosted 애플리케이션으로 추가합니다.
 2. 이메일 주소 하나만 허용하고 OTP 같은 로그인 방식을 선택합니다.
 3. 원격 관리 Tunnel을 만들고 공개 호스트 이름의 서비스 URL을 `http://bot:8080`으로 설정합니다.
-4. Tunnel 토큰을 서버의 `.env`에 `CLOUDFLARE_TUNNEL_TOKEN=...`로 직접 입력합니다.
+4. `.env.tunnel.example`을 `.env.tunnel`로 복사하고 `TUNNEL_TOKEN=...`에 토큰을 직접 입력합니다.
 5. 토큰이 준비된 뒤에만 Tunnel 프로필을 시작합니다.
 
 ```bash
@@ -133,7 +133,8 @@ docker compose --profile tunnel up -d cloudflared
 docker compose --profile tunnel logs -f cloudflared
 ```
 
-`cloudflared`는 Compose 내부 네트워크로 `bot:8080`에 접근하며 호스트에 새 포트를 열지 않습니다.
+`.env.tunnel`은 `cloudflared`만 읽고 봇 컨테이너에는 전달되지 않습니다. `cloudflared`는 Compose
+내부 네트워크로 `bot:8080`에 접근하며 호스트에 새 포트를 열지 않습니다.
 Tunnel 토큰을 가진 사람은 Tunnel을 실행할 수 있으므로 Git, 채팅, 로그에 남기지 말고 유출 시
 Cloudflare에서 즉시 교체하세요. 기본 `docker compose up -d`는 `tunnel` 프로필을 시작하지
 않으므로 토큰이 없는 로컬·개인 서버 운영에는 영향이 없습니다.
