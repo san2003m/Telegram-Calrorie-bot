@@ -8,6 +8,8 @@ version = "0.1.0"
 description = "Personal-first Telegram calorie and macro tracker"
 readme = "README.md"
 requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"]
 dependencies = [
   "aiogram>=3.20,<4",
   "aiosqlite>=0.21,<1",

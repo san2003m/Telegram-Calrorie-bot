@@ -184,5 +184,17 @@ Open Food Facts의 영양 기준이 `g`인데 실제 음료 포장은 `ml`인 �
 - 임시 이미지 만료 작업과 필요 시 S3 호환 object storage
 - 한국 식품의약품안전처/공공데이터 API 어댑터 및 라이선스 검토
 
+## 라이선스와 제3자 권리
+
+이 저장소의 원본 코드와 문서는 [Apache License 2.0](LICENSE)으로 배포합니다. 누구나
+개인·상업 목적으로 사용하고, 수정하고, 재배포할 수 있으며 라이선스 조건에 따라 저작권·특허
+허락과 보증·책임 제한이 적용됩니다. 재배포할 때는 라이선스와 저작권 고지를 보존하고 변경한
+파일을 표시해야 합니다.
+
+이 라이선스는 Open Food Facts 데이터·상품 이미지, Telegram/OpenAI 서비스, 상품명·상표,
+사용자가 제공한 사진까지 다시 허락하는 것은 아닙니다. Open Food Facts 데이터는 ODbL 등 별도
+조건이 적용됩니다. 자세한 구분과 직접 의존성 라이선스는
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)를 확인하세요.
+
 현재 구조는 `catalog.py`와 `ai_recognition.py`가 분리되어 있어 공공데이터 소스를 추가해도 Telegram
 명령과 DB 기록 코드는 거의 바뀌지 않습니다.
