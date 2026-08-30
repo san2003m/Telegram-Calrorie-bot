@@ -12,6 +12,8 @@ recorded and cached after the user reviews it.
 - Scan a barcode from a photo or enter its digits manually
 - Look up products in the local database, then Open Food Facts, then from photos with AI
 - Track calories, carbohydrates, protein, and fat
+- Detect Korean and Japanese nutrition-label formats and preserve the original basis text
+- Distinguish Korean sodium from Japanese salt equivalent and show derived conversions
 - Choose the whole package, half, one serving, or the nutrition-label basis, or enter a custom
   amount
 - Convert `g`, `ml`, item, package, and `%` units, and reuse the last amount consumed
@@ -156,13 +158,15 @@ Send photos in this order:
 
 1. Photograph the barcode so that it fills most of the frame.
 2. If it is a new product, photograph the front with the product name and total quantity visible.
-3. Photograph the nutrition label with calories, carbohydrates, protein, fat, and the declared
-   measurement basis visible.
-4. Review the basis, total quantity, and values extracted by AI, then choose the save button.
+3. Photograph the nutrition label with calories, carbohydrates, protein, fat, sodium or
+   `食塩相当量`, and the declared measurement basis visible.
+4. Review the detected market, original basis text, total quantity, and extracted values. If the
+   market is wrong, select `🇰🇷 한국` or `🇯🇵 일본` before saving.
 5. Choose the whole package, half, or one serving, or enter the actual amount consumed.
 
 Custom input supports forms such as `45g`, `250ml`, `2개` (two items), `0.5봉` (half a package),
-`70%`, and `절반` (half). For example, if a product lists nutrition per `30 g` and contains
+`70%`, and `절반` (half), as well as Japanese forms including `2個`, `1本`, `0.5袋`, `1食分`,
+and `半分`. For example, if a product lists nutrition per `30 g` and contains
 `90 g` in total, selecting half makes the bot use `45 g` and a multiplier of `1.5`. Item-based
 input is available only when the bot has read the total item count from the packaging. The bot
 does not perform unsupported conversions between units based on an assumed density.
@@ -171,6 +175,18 @@ If units conflict—for example, Open Food Facts expresses a drink's nutrition p
 package volume is in `ml`—the bot does not convert automatically. Instead, it asks the user to
 confirm the package-label basis. A confirmed unit correction is stored as private product data
 and reused for later entries.
+
+The Japanese `食塩相当量` value is not sodium itself. The bot preserves the value printed on the
+package, derives sodium using `sodium (mg) = salt equivalent (g) × 1000 ÷ 2.54`, and explicitly
+marks the result as derived. If a Korean label contains only sodium, the inverse conversion is
+used. Japanese `糖質`, `糖類`, and `食物繊維` remain distinct from total `炭水化物` and are not
+added to carbohydrates again. Barcode prefixes are not used to determine the label market.
+
+The implementation refers to the Korean Ministry of Food and Drug Safety's
+[nutrition-labeling guide](https://www.mfds.go.kr/brd/m_1060/view.do?seq=15190) and the Japanese
+Consumer Affairs Agency's
+[nutrition-labeling guide](https://www.caa.go.jp/policies/policy/food_labeling/health_promotion/assets/food_labeling_cms206_20210318_01.pdf).
+Regulations can change, so recheck the latest standards before operating a public service.
 
 ## OpenAI API usage and cost controls
 
@@ -183,6 +199,9 @@ API.
 - Responses are sent with `store=false`
 - The model returns calories, macros, and the measurement basis as constrained JSON rather than
   free-form text
+- The same request extracts the Korean or Japanese format, original basis text, sodium, and salt
+  equivalent
+- AI returns only values printed on the label; deterministic Python code performs salt conversion
 - The bot warns about numerical inconsistencies or low confidence and always requires user review
 - Confirmed results are stored in the database, so the same barcode does not trigger another API
   request
@@ -211,6 +230,9 @@ real Telegram or OpenAI requests.
   still required.
 - Coverage of Korean products in Open Food Facts is inconsistent.
 - AI OCR can be wrong and is not appropriate for medical or therapeutic nutrition management.
+- Korean/Japanese detection is advisory and must be reviewed before saving.
+- Values marked `推定値`, `目安`, or as estimates on Korean labels generate a warning but are not
+  replaced with laboratory values.
 - For labels with multiple columns, verify that the model selected the intended `per serving` or
   `per 100 g` column.
 - The bot removes photos after successful completion, cancellation, or failure, and cleans up

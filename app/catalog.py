@@ -4,6 +4,7 @@ from decimal import Decimal, InvalidOperation
 
 import httpx
 
+from app.nutrition import normalize_salt
 from app.portion import PortionError, parse_portion
 from app.schemas import ProductCandidate
 
@@ -31,6 +32,7 @@ class OpenFoodFactsCatalog:
                 "code",
                 "product_name",
                 "product_name_ko",
+                "product_name_ja",
                 "brands",
                 "nutriments",
                 "nutrition_data_per",
@@ -61,7 +63,9 @@ class OpenFoodFactsCatalog:
         kcal = _decimal(nutrients.get("energy-kcal_100g"))
         if kcal is None:
             return None
-        name = product.get("product_name_ko") or product.get("product_name")
+        korean_name = product.get("product_name_ko")
+        japanese_name = product.get("product_name_ja")
+        name = korean_name or japanese_name or product.get("product_name")
         if not isinstance(name, str) or not name.strip():
             return None
         package_amount = None
@@ -77,6 +81,9 @@ class OpenFoodFactsCatalog:
                 pass
         nutrition_data_per = str(product.get("nutrition_data_per") or "").lower()
         basis_unit = "ml" if nutrition_data_per.replace(" ", "") == "100ml" else "g"
+        sodium_g = _decimal(nutrients.get("sodium_100g"))
+        sodium_mg = sodium_g * Decimal("1000") if sodium_g is not None else None
+        salt = normalize_salt(sodium_mg, _decimal(nutrients.get("salt_100g")))
         return ProductCandidate(
             barcode=barcode,
             name=" ".join(name.split()),
@@ -89,6 +96,13 @@ class OpenFoodFactsCatalog:
             carbs_g=_decimal(nutrients.get("carbohydrates_100g")) or Decimal("0"),
             protein_g=_decimal(nutrients.get("proteins_100g")) or Decimal("0"),
             fat_g=_decimal(nutrients.get("fat_100g")) or Decimal("0"),
+            sodium_mg=salt.sodium_mg,
+            salt_equivalent_g=salt.salt_equivalent_g,
+            sodium_derived=salt.sodium_derived,
+            salt_equivalent_derived=salt.salt_equivalent_derived,
+            label_language="ko" if korean_name else "ja" if japanese_name else "unknown",
+            basis_metric_amount=Decimal("100"),
+            basis_metric_unit=basis_unit,
             source="open_food_facts",
             verified=False,
             raw_data={

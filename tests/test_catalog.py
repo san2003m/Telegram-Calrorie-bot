@@ -56,3 +56,29 @@ def test_open_food_facts_respects_100ml_basis() -> None:
     assert candidate.basis_unit == "ml"
     assert candidate.package_amount == Decimal("500")
     assert candidate.package_unit == "ml"
+
+
+def test_open_food_facts_preserves_japanese_name_and_salt() -> None:
+    payload = {
+        "status": "success",
+        "product": {
+            "product_name_ja": "テストせんべい",
+            "quantity": "100 g",
+            "nutriments": {
+                "energy-kcal_100g": 380,
+                "carbohydrates_100g": 82,
+                "proteins_100g": 7,
+                "fat_100g": 2.5,
+                "salt_100g": 1.2,
+            },
+        },
+    }
+
+    candidate = OpenFoodFactsCatalog.from_payload("4901234567894", payload)
+
+    assert candidate is not None
+    assert candidate.name == "テストせんべい"
+    assert candidate.label_language == "ja"
+    assert candidate.salt_equivalent_g == Decimal("1.2")
+    assert candidate.sodium_mg == Decimal("472.4")
+    assert candidate.sodium_derived is True

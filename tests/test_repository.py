@@ -87,6 +87,37 @@ async def test_private_product_does_not_leak_to_other_user(sessions) -> None:
         assert await get_product_version(session, private_version.id, 1) is not None
 
 
+async def test_country_label_metadata_is_persisted(sessions) -> None:
+    japanese = candidate().model_copy(
+        update={
+            "label_market": "JP",
+            "label_language": "ja",
+            "basis_text": "1本（200ml）当たり",
+            "basis_metric_amount": Decimal("200"),
+            "basis_metric_unit": "ml",
+            "basis_count_unit": "本",
+            "sodium_mg": Decimal("315.0"),
+            "salt_equivalent_g": Decimal("0.8"),
+            "sodium_derived": True,
+            "estimated_values": True,
+        }
+    )
+
+    async with sessions() as session:
+        await ensure_user(session, 1234, "Asia/Seoul")
+        version = await create_product_version(session, japanese, owner_id=1234)
+        await session.commit()
+        stored = await get_product_version(session, version.id, 1234)
+
+    assert stored is not None
+    assert stored.label_market == "JP"
+    assert stored.basis_text == "1本（200ml）当たり"
+    assert stored.sodium_mg == Decimal("315.0000")
+    assert stored.salt_equivalent_g == Decimal("0.8000")
+    assert stored.sodium_derived is True
+    assert stored.estimated_values is True
+
+
 async def test_undo_marks_last_log_void(sessions) -> None:
     async with sessions() as session:
         user = await ensure_user(session, 1234, "Asia/Seoul")

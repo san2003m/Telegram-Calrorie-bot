@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Protocol
@@ -41,6 +42,8 @@ _UNIT_ALIASES = {
     "회": "serving",
     "회분": "serving",
     "인분": "serving",
+    "食": "serving",
+    "食分": "serving",
     "package": "package",
     "봉": "package",
     "봉지": "package",
@@ -48,8 +51,16 @@ _UNIT_ALIASES = {
     "캔": "package",
     "병": "package",
     "포장": "package",
+    "袋": "package",
+    "パック": "package",
+    "缶": "package",
+    "瓶": "package",
+    "ボトル": "package",
     "piece": "piece",
     "개": "piece",
+    "個": "piece",
+    "本": "piece",
+    "枚": "piece",
     "%": "percent",
     "percent": "percent",
     "퍼센트": "percent",
@@ -66,12 +77,15 @@ _SPECIAL_PORTIONS = {
     "절반": ParsedPortion(Decimal("50"), "percent"),
     "반": ParsedPortion(Decimal("50"), "percent"),
     "한개": ParsedPortion(Decimal("1"), "piece"),
+    "全部": ParsedPortion(Decimal("1"), "package"),
+    "半分": ParsedPortion(Decimal("50"), "percent"),
 }
 
 _AMOUNT_RE = re.compile(
     r"(?P<amount>(?:\d+(?:\.\d*)?|\.\d+))\s*"
     r"(?P<unit>킬로그램|밀리리터|퍼센트|serving|package|percent|piece|"
-    r"봉지|그램|킬로|리터|회분|인분|포장|미리|ml|kg|cc|g|l|봉|팩|캔|병|회|개|%)",
+    r"ボトル|パック|食分|봉지|그램|킬로|리터|회분|인분|포장|미리|"
+    r"ml|kg|cc|g|l|봉|팩|캔|병|회|개|袋|缶|瓶|食|個|本|枚|%)",
     re.IGNORECASE,
 )
 
@@ -82,7 +96,7 @@ def _compact_number(value: Decimal) -> str:
 
 
 def parse_portion(raw: str) -> ParsedPortion:
-    normalized = raw.strip().lower().replace(",", "")
+    normalized = unicodedata.normalize("NFKC", raw).strip().lower().replace(",", "")
     compact = re.sub(r"\s+", "", normalized)
     if compact in _SPECIAL_PORTIONS:
         return _SPECIAL_PORTIONS[compact]
@@ -128,6 +142,8 @@ def package_multiplier(target: PortionTarget) -> Decimal | None:
         return target.package_amount / target.basis_amount
     if target.servings_per_package is not None and target.basis_unit == "serving":
         return target.servings_per_package / target.basis_amount
+    if target.piece_count is not None and target.basis_unit == "piece":
+        return target.piece_count / target.basis_amount
     if target.basis_unit == "package":
         return Decimal("1") / target.basis_amount
     return None

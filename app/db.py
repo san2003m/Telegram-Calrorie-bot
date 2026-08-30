@@ -23,6 +23,17 @@ def _add_compatibility_columns(connection: Connection) -> None:
     additions = {
         "product_versions": {
             "piece_count": "NUMERIC(12, 4)",
+            "label_market": "VARCHAR(16) DEFAULT 'UNKNOWN'",
+            "label_language": "VARCHAR(16) DEFAULT 'unknown'",
+            "basis_text": "TEXT",
+            "basis_metric_amount": "NUMERIC(12, 4)",
+            "basis_metric_unit": "VARCHAR(24)",
+            "basis_count_unit": "VARCHAR(32)",
+            "sodium_mg": "NUMERIC(12, 4)",
+            "salt_equivalent_g": "NUMERIC(12, 4)",
+            "sodium_derived": "BOOLEAN DEFAULT FALSE",
+            "salt_equivalent_derived": "BOOLEAN DEFAULT FALSE",
+            "estimated_values": "BOOLEAN DEFAULT FALSE",
         },
         "intake_logs": {
             "input_amount": "NUMERIC(12, 4)",

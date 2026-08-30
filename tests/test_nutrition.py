@@ -2,8 +2,13 @@ from decimal import Decimal
 
 import pytest
 
-from app.nutrition import MacroTotals, parse_positive_decimal, recognition_warnings
-from app.schemas import Amount, Nutrients, NutritionRecognition
+from app.nutrition import (
+    MacroTotals,
+    normalize_salt,
+    parse_positive_decimal,
+    recognition_warnings,
+)
+from app.schemas import Nutrients, NutritionBasis, NutritionRecognition
 
 
 def test_macro_totals_are_scaled_and_rounded() -> None:
@@ -29,8 +34,10 @@ def test_positive_decimal_rejects_invalid_values(raw: str) -> None:
 def test_recognition_warns_about_inconsistent_calories() -> None:
     result = NutritionRecognition(
         label_found=True,
+        label_market="KR",
+        label_language="ko",
         product_name="테스트 식품",
-        nutrition_basis=Amount(amount=Decimal("100"), unit="g"),
+        nutrition_basis=NutritionBasis(amount=Decimal("100"), unit="g"),
         nutrients=Nutrients(
             energy_kcal=Decimal("500"),
             carbs_g=Decimal("1"),
@@ -41,3 +48,21 @@ def test_recognition_warns_about_inconsistent_calories() -> None:
     )
 
     assert any("차이가 큽니다" in warning for warning in recognition_warnings(result))
+
+
+def test_japanese_salt_equivalent_is_converted_deterministically() -> None:
+    salt = normalize_salt(None, Decimal("0.8"))
+
+    assert salt.sodium_mg == Decimal("315.0")
+    assert salt.salt_equivalent_g == Decimal("0.8")
+    assert salt.sodium_derived is True
+    assert salt.salt_equivalent_derived is False
+
+
+def test_korean_sodium_is_converted_to_salt_equivalent() -> None:
+    salt = normalize_salt(Decimal("500"), None)
+
+    assert salt.sodium_mg == Decimal("500")
+    assert salt.salt_equivalent_g == Decimal("1.270")
+    assert salt.sodium_derived is False
+    assert salt.salt_equivalent_derived is True

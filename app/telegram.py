@@ -23,7 +23,7 @@ from app.catalog import OpenFoodFactsCatalog
 from app.config import Settings
 from app.image_tools import preprocess_image, remove_private_image, write_private_image
 from app.models import IntakeLog, RecognitionJob
-from app.nutrition import parse_positive_decimal, recognition_warnings
+from app.nutrition import normalize_salt, parse_positive_decimal, recognition_warnings
 from app.portion import (
     ParsedPortion,
     PortionError,
@@ -81,7 +81,11 @@ async def _guard(message: Message, settings: Settings) -> bool:
 
 
 def _fmt(value: Decimal) -> str:
-    normalized = value.quantize(Decimal("0.1"))
+    return _fmt_precision(value, Decimal("0.1"))
+
+
+def _fmt_precision(value: Decimal, quantum: Decimal) -> str:
+    normalized = value.quantize(quantum)
     return f"{normalized:f}".rstrip("0").rstrip(".")
 
 
@@ -104,11 +108,22 @@ def _format_uptime(seconds: float) -> str:
 def _product_text(version) -> str:
     product = version.product
     brand = f" · {product.brand}" if product.brand else ""
+    basis = f"{_fmt(version.basis_amount)} {version.basis_unit}"
+    if getattr(version, "basis_text", None):
+        basis = f"{version.basis_text} → {basis}"
     lines = [
-        f"{product.name}{brand}\n영양 기준: {_fmt(version.basis_amount)} {version.basis_unit}",
+        f"{product.name}{brand}\n영양 기준: {basis}",
         f"{_fmt(version.kcal)} kcal · 탄 {_fmt(version.carbs_g)} g · "
         f"단 {_fmt(version.protein_g)} g · 지 {_fmt(version.fat_g)} g",
     ]
+    market = _market_text(getattr(version, "label_market", "UNKNOWN"))
+    if market:
+        lines.insert(1, f"표시 형식: {market}")
+    salt_text = _salt_text(version)
+    if salt_text:
+        lines.append(salt_text)
+    if getattr(version, "estimated_values", False):
+        lines.append("참고: 포장지에서 추정치 또는 참고값으로 표시된 영양정보")
     package_details = []
     if version.package_amount is not None and version.package_unit:
         package_details.append(f"총 {_fmt(version.package_amount)} {version.package_unit}")
@@ -119,6 +134,25 @@ def _product_text(version) -> str:
     if package_details:
         lines.append("포장 정보: " + " · ".join(package_details))
     return "\n".join(lines)
+
+
+def _market_text(market: str) -> str:
+    return {"KR": "🇰🇷 한국", "JP": "🇯🇵 일본"}.get(market, "")
+
+
+def _salt_text(values) -> str:
+    sodium = getattr(values, "sodium_mg", None)
+    salt = getattr(values, "salt_equivalent_g", None)
+    if sodium is None and salt is None:
+        return ""
+    parts = []
+    if salt is not None:
+        suffix = " (나트륨에서 환산)" if getattr(values, "salt_equivalent_derived", False) else ""
+        parts.append(f"식염상당량 {_fmt_precision(salt, Decimal('0.001'))} g{suffix}")
+    if sodium is not None:
+        suffix = " (식염상당량에서 환산)" if getattr(values, "sodium_derived", False) else ""
+        parts.append(f"나트륨 {_fmt_precision(sodium, Decimal('0.1'))} mg{suffix}")
+    return " · ".join(parts)
 
 
 def _can_use_portion(version, portion: ParsedPortion) -> bool:
@@ -190,13 +224,23 @@ def _portion_keyboard(version, last_log: IntakeLog | None) -> InlineKeyboardMark
     )
 
 
-def _confirmation_keyboard(job_id: int) -> InlineKeyboardMarkup:
+def _confirmation_keyboard(job_id: int, market: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
+                InlineKeyboardButton(
+                    text=f"{'✅ ' if market == 'KR' else ''}🇰🇷 한국",
+                    callback_data=f"market:{job_id}:KR",
+                ),
+                InlineKeyboardButton(
+                    text=f"{'✅ ' if market == 'JP' else ''}🇯🇵 일본",
+                    callback_data=f"market:{job_id}:JP",
+                ),
+            ],
+            [
                 InlineKeyboardButton(text="제품 정보 저장", callback_data=f"confirm:{job_id}"),
                 InlineKeyboardButton(text="취소", callback_data=f"cancel:{job_id}"),
-            ]
+            ],
         ]
     )
 
@@ -246,6 +290,17 @@ def _candidate_with_basis_unit(version, basis_unit: str) -> ProductCandidate:
         carbs_g=version.carbs_g,
         protein_g=version.protein_g,
         fat_g=version.fat_g,
+        sodium_mg=getattr(version, "sodium_mg", None),
+        salt_equivalent_g=getattr(version, "salt_equivalent_g", None),
+        sodium_derived=getattr(version, "sodium_derived", False),
+        salt_equivalent_derived=getattr(version, "salt_equivalent_derived", False),
+        label_market=getattr(version, "label_market", "UNKNOWN"),
+        label_language=getattr(version, "label_language", "unknown"),
+        basis_text=getattr(version, "basis_text", None),
+        basis_metric_amount=getattr(version, "basis_metric_amount", None),
+        basis_metric_unit=getattr(version, "basis_metric_unit", None),
+        basis_count_unit=getattr(version, "basis_count_unit", None),
+        estimated_values=getattr(version, "estimated_values", False),
         source="user_correction",
         verified=True,
         raw_data=raw_data,
@@ -318,7 +373,8 @@ def create_router(context: BotContext) -> Router:
             "/manual 이름 | kcal | 탄수 | 단백질 | 지방 — 직접 기록\n"
             "/cancel — 진행 중인 사진 인식 취소\n"
             "/whoami — 내 Telegram ID 확인\n\n"
-            "섭취량 입력 예: 45g, 250ml, 2개, 0.5봉, 70%, 절반"
+            "섭취량 입력 예: 45g, 250ml, 2개/2個, 1本, 0.5봉/0.5袋, "
+            "70%, 절반/半分"
         )
 
     @router.message(Command("ping"))
@@ -705,6 +761,45 @@ def create_router(context: BotContext) -> Router:
         await callback.answer("취소했습니다.")
         await _clear_inline_keyboard(callback)
 
+    @router.callback_query(F.data.startswith("market:"))
+    async def correct_label_market(callback: CallbackQuery) -> None:
+        if not callback.from_user or not _allowed(callback.from_user.id, context.settings):
+            await callback.answer("사용 권한이 없습니다.", show_alert=True)
+            return
+        try:
+            _, job_raw, market = (callback.data or "").split(":", 2)
+            job_id = int(job_raw)
+            if market not in {"KR", "JP"}:
+                raise ValueError
+        except ValueError:
+            await callback.answer("잘못된 요청입니다.", show_alert=True)
+            return
+
+        async with context.sessions() as session:
+            job = await session.get(RecognitionJob, job_id)
+            if (
+                job is None
+                or job.user_telegram_id != callback.from_user.id
+                or job.state != "awaiting_confirm"
+                or not job.result_json
+            ):
+                await callback.answer("만료되었거나 처리된 요청입니다.", show_alert=True)
+                return
+            result = NutritionRecognition.model_validate(job.result_json)
+            result.label_market = market
+            job.result_json = result.model_dump(mode="json")
+            await session.commit()
+
+        await callback.answer(f"{_market_text(market)} 표시 형식으로 설정했습니다.")
+        if callback.message:
+            try:
+                await callback.message.edit_text(
+                    _recognition_result_text(result),
+                    reply_markup=_confirmation_keyboard(job_id, market),
+                )
+            except TelegramBadRequest:
+                pass
+
     @router.callback_query(F.data.startswith("confirm:"))
     async def confirm_recognition(callback: CallbackQuery) -> None:
         if not callback.from_user or not _allowed(callback.from_user.id, context.settings):
@@ -880,8 +975,8 @@ async def _handle_job_photo(context: BotContext, message: Message, job_id: int, 
             job.state = "awaiting_label"
             await session.commit()
             await message.answer(
-                "앞면을 저장했습니다. 이제 열량·탄수화물·단백질·지방이 보이도록 "
-                "영양정보 표를 가까이 찍어 보내주세요."
+                "앞면을 저장했습니다. 이제 열량·탄수화물·단백질·지방과 "
+                "나트륨 또는 食塩相当量이 보이도록 영양정보 표를 가까이 찍어 보내주세요."
             )
             return
         if job.state != "awaiting_label" or not job.front_path:
@@ -936,28 +1031,10 @@ async def _handle_job_photo(context: BotContext, message: Message, job_id: int, 
         job.result_json = result.model_dump(mode="json")
         job.state = "awaiting_confirm"
         await session.commit()
-    warnings = recognition_warnings(result)
-    candidate = _candidate_from_recognition(None, result)
-    result_text = (
-        f"AI 인식 결과 — 저장 전 확인\n{candidate.name}"
-        f"{f' · {candidate.brand}' if candidate.brand else ''}\n"
-        f"기준: {_fmt(candidate.basis_amount)} {candidate.basis_unit}\n"
-        f"{_fmt(candidate.kcal)} kcal · 탄 {_fmt(candidate.carbs_g)} g · "
-        f"단 {_fmt(candidate.protein_g)} g · 지 {_fmt(candidate.fat_g)} g\n"
-        f"신뢰도: {_fmt(result.confidence * 100)}%"
+    await message.answer(
+        _recognition_result_text(result),
+        reply_markup=_confirmation_keyboard(job_id, result.label_market),
     )
-    package_details = []
-    if candidate.package_amount is not None and candidate.package_unit:
-        package_details.append(f"총 {_fmt(candidate.package_amount)} {candidate.package_unit}")
-    if candidate.servings_per_package is not None:
-        package_details.append(f"{_fmt(candidate.servings_per_package)}회분")
-    if candidate.piece_count is not None:
-        package_details.append(f"{_fmt(candidate.piece_count)}개")
-    if package_details:
-        result_text += "\n포장 정보: " + " · ".join(package_details)
-    if warnings:
-        result_text += "\n\n주의: " + " ".join(warnings)
-    await message.answer(result_text, reply_markup=_confirmation_keyboard(job_id))
 
 
 def _candidate_from_recognition(
@@ -965,6 +1042,12 @@ def _candidate_from_recognition(
 ) -> ProductCandidate:
     package_amount = result.package_amount.amount if result.package_amount else None
     package_unit = result.package_amount.unit if result.package_amount else None
+    salt = normalize_salt(result.nutrients.sodium_mg, result.nutrients.salt_equivalent_g)
+    raw_data = result.model_dump(mode="json")
+    raw_data["normalization"] = {
+        "sodium_derived": salt.sodium_derived,
+        "salt_equivalent_derived": salt.salt_equivalent_derived,
+    }
     return ProductCandidate(
         barcode=barcode,
         name=result.product_name,
@@ -979,10 +1062,59 @@ def _candidate_from_recognition(
         carbs_g=result.nutrients.carbs_g,
         protein_g=result.nutrients.protein_g,
         fat_g=result.nutrients.fat_g,
+        sodium_mg=salt.sodium_mg,
+        salt_equivalent_g=salt.salt_equivalent_g,
+        sodium_derived=salt.sodium_derived,
+        salt_equivalent_derived=salt.salt_equivalent_derived,
+        label_market=result.label_market,
+        label_language=result.label_language,
+        basis_text=result.nutrition_basis.raw_text or None,
+        basis_metric_amount=result.nutrition_basis.metric_amount,
+        basis_metric_unit=result.nutrition_basis.metric_unit,
+        basis_count_unit=result.nutrition_basis.count_unit,
+        estimated_values=result.estimated_values,
         source="ai_label",
         verified=True,
-        raw_data=result.model_dump(mode="json"),
+        raw_data=raw_data,
     )
+
+
+def _recognition_result_text(result: NutritionRecognition) -> str:
+    candidate = _candidate_from_recognition(None, result)
+    market = _market_text(result.label_market) or "❔ 형식 미확정"
+    language = {"ko": "한국어", "ja": "일본어", "mixed": "혼합", "unknown": "미확인"}[
+        result.label_language
+    ]
+    basis = f"{_fmt(candidate.basis_amount)} {candidate.basis_unit}"
+    if candidate.basis_text:
+        basis = f"{candidate.basis_text} → {basis}"
+    lines = [
+        f"AI 인식 결과 — 저장 전 확인\n{candidate.name}"
+        f"{f' · {candidate.brand}' if candidate.brand else ''}",
+        f"표시 형식: {market} · {language}",
+        f"기준: {basis}",
+        f"{_fmt(candidate.kcal)} kcal · 탄 {_fmt(candidate.carbs_g)} g · "
+        f"단 {_fmt(candidate.protein_g)} g · 지 {_fmt(candidate.fat_g)} g",
+    ]
+    salt_text = _salt_text(candidate)
+    if salt_text:
+        lines.append(salt_text)
+    lines.append(f"신뢰도: {_fmt(result.confidence * 100)}%")
+
+    package_details = []
+    if candidate.package_amount is not None and candidate.package_unit:
+        package_details.append(f"총 {_fmt(candidate.package_amount)} {candidate.package_unit}")
+    if candidate.servings_per_package is not None:
+        package_details.append(f"{_fmt(candidate.servings_per_package)}회분")
+    if candidate.piece_count is not None:
+        package_details.append(f"{_fmt(candidate.piece_count)}개")
+    if package_details:
+        lines.append("포장 정보: " + " · ".join(package_details))
+
+    warnings = recognition_warnings(result)
+    if warnings:
+        lines.append("\n주의: " + " ".join(warnings))
+    return "\n".join(lines)
 
 
 async def _begin_recognition_job(

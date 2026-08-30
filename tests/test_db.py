@@ -43,7 +43,20 @@ async def test_create_schema_adds_columns_to_existing_database() -> None:
         ).one()
     await database.dispose()
 
-    assert "piece_count" in product_columns
+    assert {
+        "piece_count",
+        "label_market",
+        "label_language",
+        "basis_text",
+        "basis_metric_amount",
+        "basis_metric_unit",
+        "basis_count_unit",
+        "sodium_mg",
+        "salt_equivalent_g",
+        "sodium_derived",
+        "salt_equivalent_derived",
+        "estimated_values",
+    } <= product_columns
     assert {"input_amount", "input_unit"} <= log_columns
     assert Decimal(str(package_measure.package_amount)) == Decimal("500")
     assert package_measure.package_unit == "ml"
