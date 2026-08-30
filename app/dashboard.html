@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>칼로리 기록 대시보드</title>
+  <style>
+    :root {
+      --ink: #17201c;
+      --muted: #69746f;
+      --paper: #f4f1e9;
+      --card: rgba(255, 255, 255, .78);
+      --line: rgba(23, 32, 28, .11);
+      --green: #1d6b4a;
+      --green-soft: #dceadd;
+      --orange: #e06f42;
+      --yellow: #e9b949;
+      --blue: #5a7da5;
+      --shadow: 0 18px 50px rgba(45, 55, 48, .09);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 9% 4%, rgba(233, 185, 73, .19), transparent 27rem),
+        radial-gradient(circle at 94% 14%, rgba(29, 107, 74, .13), transparent 30rem),
+        var(--paper);
+      font-family: -apple-system, BlinkMacSystemFont, "Pretendard", "Noto Sans KR", sans-serif;
+      min-height: 100vh;
+    }
+    button { font: inherit; }
+    .shell { width: min(1180px, calc(100% - 36px)); margin: 0 auto; padding: 46px 0 64px; }
+    header { display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; margin-bottom: 30px; }
+    .eyebrow { color: var(--green); font-size: .75rem; font-weight: 800; letter-spacing: .13em; text-transform: uppercase; }
+    h1 { margin: 6px 0 5px; font-size: clamp(2rem, 4vw, 3.25rem); letter-spacing: -.06em; line-height: 1.05; }
+    .subtitle, .updated { margin: 0; color: var(--muted); font-size: .9rem; }
+    .header-actions { display: flex; align-items: center; gap: 12px; }
+    .refresh {
+      border: 1px solid var(--line); background: rgba(255,255,255,.62); color: var(--ink);
+      border-radius: 999px; padding: 10px 14px; cursor: pointer; font-weight: 700;
+    }
+    .refresh:hover { background: #fff; }
+    .refresh:disabled { opacity: .55; cursor: wait; }
+    .grid { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(280px, .55fr); gap: 18px; }
+    .card {
+      background: var(--card); border: 1px solid rgba(255,255,255,.8); border-radius: 24px;
+      box-shadow: var(--shadow); backdrop-filter: blur(12px);
+      min-width: 0;
+    }
+    .hero { padding: 28px; min-height: 290px; }
+    .card-head { display: flex; justify-content: space-between; align-items: center; gap: 18px; }
+    h2 { margin: 0; font-size: 1.12rem; letter-spacing: -.03em; }
+    .date { color: var(--muted); font-size: .82rem; }
+    .kcal-row { display: grid; grid-template-columns: 170px 1fr; align-items: center; gap: 28px; margin-top: 24px; }
+    .ring { width: 164px; height: 164px; position: relative; display: grid; place-items: center; }
+    .ring svg { position: absolute; inset: 0; transform: rotate(-90deg); }
+    .ring circle { fill: none; stroke-width: 11; }
+    .ring .track { stroke: #e6e5dd; }
+    .ring .value { stroke: var(--green); stroke-linecap: round; transition: stroke-dashoffset .5s ease; }
+    .ring-label { text-align: center; position: relative; }
+    .ring-label strong { display: block; font-size: 2rem; letter-spacing: -.06em; }
+    .ring-label span { color: var(--muted); font-size: .78rem; }
+    .remaining { margin: 0 0 16px; font-size: 1.1rem; font-weight: 750; letter-spacing: -.02em; }
+    .remaining strong { color: var(--green); font-size: 1.55rem; }
+    .macro-list { display: grid; gap: 13px; }
+    .macro-top { display: flex; justify-content: space-between; font-size: .82rem; margin-bottom: 6px; }
+    .macro-name { font-weight: 750; }
+    .macro-number { color: var(--muted); }
+    .bar { height: 8px; background: #e8e8df; border-radius: 999px; overflow: hidden; }
+    .bar > i { display: block; height: 100%; border-radius: inherit; width: 0; transition: width .5s ease; }
+    .macro:nth-child(1) .bar > i { background: var(--yellow); }
+    .macro:nth-child(2) .bar > i { background: var(--blue); }
+    .macro:nth-child(3) .bar > i { background: var(--orange); }
+    .quick { padding: 28px; }
+    .quick-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 22px; }
+    .quick-item { padding: 18px 16px; background: rgba(244,241,233,.72); border-radius: 17px; }
+    .quick-item span { display: block; color: var(--muted); font-size: .77rem; margin-bottom: 6px; }
+    .quick-item strong { font-size: 1.35rem; letter-spacing: -.04em; }
+    .goal-hint { margin: 18px 0 0; padding-top: 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: .82rem; line-height: 1.55; }
+    .trend { grid-column: 1 / -1; padding: 27px 28px 22px; }
+    .segmented { padding: 3px; border-radius: 999px; background: #ebeae2; display: flex; }
+    .segmented button { border: 0; border-radius: 999px; padding: 7px 12px; background: transparent; color: var(--muted); cursor: pointer; font-size: .78rem; font-weight: 750; }
+    .segmented button.active { color: var(--ink); background: white; box-shadow: 0 2px 8px rgba(30,30,20,.08); }
+    .trend-summary { display: flex; gap: 28px; margin: 24px 0 8px; }
+    .trend-summary span { color: var(--muted); font-size: .76rem; display: block; }
+    .trend-summary strong { font-size: 1.35rem; letter-spacing: -.04em; }
+    .chart-wrap { min-height: 240px; overflow: hidden; }
+    #chart { width: 100%; height: 240px; display: block; }
+    .chart-label { fill: var(--muted); font-size: 11px; }
+    .chart-grid { stroke: rgba(23,32,28,.08); stroke-width: 1; }
+    .chart-area { fill: url(#areaGradient); }
+    .chart-line { fill: none; stroke: var(--green); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+    .chart-dot { fill: white; stroke: var(--green); stroke-width: 2; }
+    .goal-line { stroke: var(--orange); stroke-width: 1.5; stroke-dasharray: 5 5; opacity: .75; }
+    .recent { grid-column: 1 / -1; padding: 27px 28px 14px; }
+    .count-badge { background: var(--green-soft); color: var(--green); padding: 6px 10px; border-radius: 999px; font-size: .75rem; font-weight: 800; }
+    .recent-list { margin-top: 17px; }
+    .entry { display: grid; grid-template-columns: minmax(180px, 1.35fr) .7fr .55fr 1fr; gap: 20px; align-items: center; padding: 17px 4px; border-top: 1px solid var(--line); }
+    .entry:first-child { border-top: 0; }
+    .food-name { font-weight: 780; letter-spacing: -.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .food-meta, .entry-time { color: var(--muted); font-size: .77rem; margin-top: 4px; }
+    .entry-kcal { font-size: 1.05rem; font-weight: 800; }
+    .entry-kcal small { color: var(--muted); font-size: .72rem; font-weight: 600; }
+    .entry-macros { color: var(--muted); font-size: .77rem; line-height: 1.6; }
+    .tags { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+    .tag { border: 1px solid var(--line); border-radius: 999px; padding: 5px 8px; color: var(--muted); font-size: .7rem; white-space: nowrap; }
+    .tag.source { color: var(--green); border-color: rgba(29,107,74,.2); background: rgba(220,234,221,.5); }
+    .empty { padding: 44px 8px; text-align: center; color: var(--muted); border-top: 1px solid var(--line); line-height: 1.6; }
+    .error { display: none; margin-bottom: 18px; padding: 14px 16px; border-radius: 14px; color: #8e3427; background: #f9dfd8; font-size: .86rem; }
+    footer { text-align: center; color: var(--muted); font-size: .73rem; margin-top: 25px; }
+    @media (max-width: 760px) {
+      .shell { width: min(100% - 22px, 680px); padding-top: 28px; }
+      header { align-items: flex-start; flex-direction: column; }
+      .header-actions { width: 100%; justify-content: space-between; }
+      .grid { grid-template-columns: 1fr; }
+      .hero, .quick, .trend, .recent { padding: 22px 19px; }
+      .kcal-row { grid-template-columns: 1fr; justify-items: center; }
+      .kcal-detail { width: 100%; }
+      .trend { grid-column: auto; }
+      .recent { grid-column: auto; }
+      .entry { grid-template-columns: 1fr auto; gap: 8px 15px; }
+      .entry-macros { grid-column: 1; }
+      .tags { grid-column: 2; grid-row: 2; }
+      .chart-wrap { overflow-x: auto; }
+      #chart { min-width: 610px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div>
+        <div class="eyebrow">Calorie log</div>
+        <h1>오늘, 잘 먹고 있나요?</h1>
+        <p class="subtitle">Telegram에 기록한 섭취 내역을 한눈에 확인합니다.</p>
+      </div>
+      <div class="header-actions">
+        <p class="updated" id="updated">불러오는 중…</p>
+        <button class="refresh" id="refresh" type="button">새로고침</button>
+      </div>
+    </header>
+
+    <div class="error" id="error" role="alert"></div>
+
+    <section class="grid">
+      <article class="card hero">
+        <div class="card-head"><h2>오늘의 영양</h2><span class="date" id="todayDate">—</span></div>
+        <div class="kcal-row">
+          <div class="ring">
+            <svg viewBox="0 0 164 164" aria-hidden="true">
+              <circle class="track" cx="82" cy="82" r="68"></circle>
+              <circle class="value" id="kcalRing" cx="82" cy="82" r="68"></circle>
+            </svg>
+            <div class="ring-label"><strong id="todayKcal">0</strong><span id="kcalGoalLabel">kcal</span></div>
+          </div>
+          <div class="kcal-detail">
+            <p class="remaining" id="remaining">목표를 설정하면 남은 열량을 보여드려요.</p>
+            <div class="macro-list" id="macroList"></div>
+          </div>
+        </div>
+      </article>
+
+      <aside class="card quick">
+        <div class="card-head"><h2>오늘 요약</h2><span class="count-badge" id="itemCount">0건</span></div>
+        <div class="quick-grid">
+          <div class="quick-item"><span>탄수화물</span><strong id="carbs">0 g</strong></div>
+          <div class="quick-item"><span>단백질</span><strong id="protein">0 g</strong></div>
+          <div class="quick-item"><span>지방</span><strong id="fat">0 g</strong></div>
+          <div class="quick-item"><span>일일 달성률</span><strong id="achievement">—</strong></div>
+        </div>
+        <p class="goal-hint" id="goalHint">Telegram에서 <b>/goal kcal 탄수화물 단백질 지방</b>을 입력하면 목표 대비 진행률이 표시됩니다.</p>
+      </aside>
+
+      <article class="card trend">
+        <div class="card-head">
+          <h2>섭취 추이</h2>
+          <div class="segmented" aria-label="기간 선택">
+            <button type="button" data-days="7" class="active">7일</button>
+            <button type="button" data-days="30">30일</button>
+          </div>
+        </div>
+        <div class="trend-summary">
+          <div><span>하루 평균</span><strong id="averageKcal">0 kcal</strong></div>
+          <div><span>기간 기록</span><strong id="periodItems">0건</strong></div>
+        </div>
+        <div class="chart-wrap"><svg id="chart" role="img" aria-label="일별 칼로리 섭취 추이"></svg></div>
+      </article>
+
+      <article class="card recent">
+        <div class="card-head"><h2>최근 기록</h2><span class="date">최대 12건</span></div>
+        <div class="recent-list" id="recentList"></div>
+      </article>
+    </section>
+    <footer>개인 서버의 읽기 전용 화면 · 데이터 수정은 Telegram 봇에서 할 수 있습니다.</footer>
+  </main>
+
+  <script>
+    const state = { data: null, days: 7 };
+    const $ = (id) => document.getElementById(id);
+    const formatNumber = (value, digits = 1) => new Intl.NumberFormat("ko-KR", { maximumFractionDigits: digits }).format(value || 0);
+    const pct = (value, goal) => goal ? Math.min((value / goal) * 100, 100) : 0;
+    const sourceLabels = { open_food_facts: "Open Food Facts", ai_label: "AI 인식", manual: "직접 입력", user_correction: "사용자 수정", test: "테스트" };
+
+    function element(tag, className, text) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    }
+
+    function renderSummary(data) {
+      const { totals, goals, item_count: count } = data.today;
+      $("todayDate").textContent = new Intl.DateTimeFormat("ko-KR", { month: "long", day: "numeric", weekday: "short" }).format(new Date(`${data.today.date}T12:00:00`));
+      $("todayKcal").textContent = formatNumber(totals.kcal, 0);
+      $("carbs").textContent = `${formatNumber(totals.carbs_g)} g`;
+      $("protein").textContent = `${formatNumber(totals.protein_g)} g`;
+      $("fat").textContent = `${formatNumber(totals.fat_g)} g`;
+      $("itemCount").textContent = `${count}건`;
+
+      const circumference = 2 * Math.PI * 68;
+      const ring = $("kcalRing");
+      ring.style.strokeDasharray = String(circumference);
+      ring.style.strokeDashoffset = String(circumference * (1 - pct(totals.kcal, goals.kcal) / 100));
+      if (goals.kcal) {
+        const remaining = Math.max(goals.kcal - totals.kcal, 0);
+        $("kcalGoalLabel").textContent = `/ ${formatNumber(goals.kcal, 0)} kcal`;
+        $("remaining").replaceChildren(document.createTextNode("오늘 남은 열량 "), element("strong", "", `${formatNumber(remaining, 0)} kcal`));
+        $("achievement").textContent = `${formatNumber((totals.kcal / goals.kcal) * 100, 0)}%`;
+        $("goalHint").textContent = totals.kcal > goals.kcal ? `목표보다 ${formatNumber(totals.kcal - goals.kcal, 0)} kcal 더 섭취했어요.` : "현재 기록 기준으로 계산된 값입니다.";
+      } else {
+        $("kcalGoalLabel").textContent = "kcal";
+        $("remaining").textContent = "목표를 설정하면 남은 열량을 보여드려요.";
+        $("achievement").textContent = "—";
+      }
+
+      const macros = [
+        ["탄수화물", totals.carbs_g, goals.carbs_g],
+        ["단백질", totals.protein_g, goals.protein_g],
+        ["지방", totals.fat_g, goals.fat_g]
+      ];
+      const list = $("macroList");
+      list.replaceChildren();
+      macros.forEach(([name, value, goal]) => {
+        const row = element("div", "macro");
+        const top = element("div", "macro-top");
+        top.append(element("span", "macro-name", name), element("span", "macro-number", goal ? `${formatNumber(value)} / ${formatNumber(goal)} g` : `${formatNumber(value)} g`));
+        const bar = element("div", "bar");
+        const fill = document.createElement("i");
+        fill.style.width = `${pct(value, goal)}%`;
+        bar.append(fill); row.append(top, bar); list.append(row);
+      });
+    }
+
+    function svgNode(tag, attributes = {}) {
+      const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+      Object.entries(attributes).forEach(([key, value]) => node.setAttribute(key, String(value)));
+      return node;
+    }
+
+    function renderChart() {
+      const all = state.data.days;
+      const days = all.slice(-state.days);
+      const goal = state.data.today.goals.kcal;
+      const average = days.reduce((sum, day) => sum + day.totals.kcal, 0) / days.length;
+      const items = days.reduce((sum, day) => sum + day.item_count, 0);
+      $("averageKcal").textContent = `${formatNumber(average, 0)} kcal`;
+      $("periodItems").textContent = `${items}건`;
+
+      const svg = $("chart");
+      svg.replaceChildren();
+      const width = 1000, height = 240, left = 42, right = 18, top = 18, bottom = 34;
+      const chartWidth = width - left - right, chartHeight = height - top - bottom;
+      svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+
+      const maxValue = Math.max(...days.map(day => day.totals.kcal), goal || 0, 500);
+      const yMax = Math.ceil(maxValue / 500) * 500;
+      const x = (index) => left + (days.length === 1 ? 0 : index * chartWidth / (days.length - 1));
+      const y = (value) => top + chartHeight - (value / yMax) * chartHeight;
+      const defs = svgNode("defs");
+      const gradient = svgNode("linearGradient", { id: "areaGradient", x1: 0, y1: 0, x2: 0, y2: 1 });
+      gradient.append(svgNode("stop", { offset: "0%", "stop-color": "#1d6b4a", "stop-opacity": .22 }), svgNode("stop", { offset: "100%", "stop-color": "#1d6b4a", "stop-opacity": .01 }));
+      defs.append(gradient); svg.append(defs);
+
+      for (let index = 0; index <= 4; index++) {
+        const value = yMax * index / 4;
+        const yPos = y(value);
+        svg.append(svgNode("line", { x1: left, x2: width - right, y1: yPos, y2: yPos, class: "chart-grid" }));
+        const label = svgNode("text", { x: left - 8, y: yPos + 4, "text-anchor": "end", class: "chart-label" });
+        label.textContent = formatNumber(value, 0); svg.append(label);
+      }
+      if (goal) svg.append(svgNode("line", { x1: left, x2: width - right, y1: y(goal), y2: y(goal), class: "goal-line" }));
+
+      const points = days.map((day, index) => [x(index), y(day.totals.kcal)]);
+      const linePath = points.map(([px, py], index) => `${index ? "L" : "M"} ${px} ${py}`).join(" ");
+      const areaPath = `${linePath} L ${points.at(-1)[0]} ${top + chartHeight} L ${points[0][0]} ${top + chartHeight} Z`;
+      svg.append(svgNode("path", { d: areaPath, class: "chart-area" }), svgNode("path", { d: linePath, class: "chart-line" }));
+      points.forEach(([px, py], index) => {
+        if (state.days === 7 || index === points.length - 1) svg.append(svgNode("circle", { cx: px, cy: py, r: 4, class: "chart-dot" }));
+      });
+
+      const labelStep = state.days === 7 ? 1 : 5;
+      days.forEach((day, index) => {
+        if (index % labelStep !== 0 && index !== days.length - 1) return;
+        const label = svgNode("text", { x: x(index), y: height - 9, "text-anchor": "middle", class: "chart-label" });
+        const parsed = new Date(`${day.date}T12:00:00`);
+        label.textContent = `${parsed.getMonth() + 1}/${parsed.getDate()}`; svg.append(label);
+      });
+    }
+
+    function sourceLabel(item) {
+      const source = sourceLabels[item.nutrition.source] || item.nutrition.source || "출처 미상";
+      const market = item.nutrition.market === "KR" ? "한국 라벨" : item.nutrition.market === "JP" ? "일본 라벨" : null;
+      return { source, market };
+    }
+
+    function renderRecent(items) {
+      const list = $("recentList"); list.replaceChildren();
+      if (!items.length) {
+        list.append(element("div", "empty", "아직 기록이 없습니다. Telegram 봇에서 음식을 기록해 보세요.")); return;
+      }
+      items.forEach((item) => {
+        const entry = element("div", "entry");
+        const food = element("div");
+        food.append(element("div", "food-name", item.name));
+        const details = [item.brand, item.amount, item.nutrition.basis].filter(Boolean).join(" · ");
+        food.append(element("div", "food-meta", details));
+
+        const time = element("div");
+        const timestamp = new Date(item.consumed_at);
+        time.append(element("div", "entry-time", new Intl.DateTimeFormat("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(timestamp)));
+
+        const kcal = element("div", "entry-kcal");
+        kcal.append(document.createTextNode(formatNumber(item.kcal, 0)), element("small", "", " kcal"));
+        const macros = element("div", "entry-macros", `탄 ${formatNumber(item.carbs_g)} · 단 ${formatNumber(item.protein_g)} · 지 ${formatNumber(item.fat_g)} g`);
+        const tags = element("div", "tags");
+        const labels = sourceLabel(item);
+        tags.append(element("span", "tag source", labels.source));
+        if (labels.market) tags.append(element("span", "tag", labels.market));
+        if (item.nutrition.estimated) tags.append(element("span", "tag", "추정값"));
+        if (item.nutrition.derived) tags.append(element("span", "tag", "환산 포함"));
+        entry.append(food, time, kcal, macros, tags); list.append(entry);
+      });
+    }
+
+    function render(data) {
+      renderSummary(data); renderChart(); renderRecent(data.recent);
+      const generated = new Date(data.generated_at);
+      $("updated").textContent = `${new Intl.DateTimeFormat("ko-KR", { hour: "2-digit", minute: "2-digit" }).format(generated)} 갱신`;
+      if (!data.has_user) {
+        $("error").textContent = "아직 소유자의 기록이 없습니다. 먼저 Telegram 봇에서 한 건을 기록해 주세요.";
+        $("error").style.display = "block";
+      }
+    }
+
+    async function load() {
+      const button = $("refresh"); button.disabled = true;
+      $("error").style.display = "none";
+      try {
+        const response = await fetch("/api/dashboard", { headers: { Accept: "application/json" }, cache: "no-store" });
+        if (!response.ok) throw new Error(response.status === 503 ? "대시보드 소유자 설정을 확인해 주세요." : "데이터를 불러오지 못했습니다.");
+        state.data = await response.json(); render(state.data);
+      } catch (error) {
+        $("error").textContent = error.message || "데이터를 불러오지 못했습니다.";
+        $("error").style.display = "block";
+      } finally { button.disabled = false; }
+    }
+
+    document.querySelectorAll("[data-days]").forEach((button) => button.addEventListener("click", () => {
+      state.days = Number(button.dataset.days);
+      document.querySelectorAll("[data-days]").forEach((item) => item.classList.toggle("active", item === button));
+      if (state.data) renderChart();
+    }));
+    $("refresh").addEventListener("click", load);
+    load();
+    setInterval(load, 60000);
+  </script>
+</body>
+</html>

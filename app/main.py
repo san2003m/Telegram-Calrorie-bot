@@ -58,7 +58,11 @@ async def run() -> None:
 
     health_server = uvicorn.Server(
         uvicorn.Config(
-            create_health_app(database.sessions),
+            create_health_app(
+                database.sessions,
+                owner_telegram_id=settings.owner_telegram_id,
+                app_timezone=settings.app_timezone,
+            ),
             host=settings.health_host,
             port=settings.health_port,
             log_level="warning",

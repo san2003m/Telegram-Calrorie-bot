@@ -18,11 +18,12 @@ recorded and cached after the user reviews it.
   amount
 - Convert `g`, `ml`, item, package, and `%` units, and reuse the last amount consumed
 - View today's totals and recent entries, undo the latest entry, and set daily goals
+- View today's goals, 7-day and 30-day trends, and recent entries in a private web dashboard
 - Add entries manually
 - Lock the bot to one owner or optionally allow public sign-up
 - Run locally with SQLite or in Docker with PostgreSQL
 - Use Telegram long polling, with no domain, TLS certificate, or public web port required
-- Check the database and application status through `GET /healthz`
+- Check status through `GET /healthz` and use the read-only dashboard at `GET /dashboard`
 - Preserve size-limited rotating logs across restarts
 
 ## How it works
@@ -102,11 +103,31 @@ docker compose logs -f bot
 curl http://127.0.0.1:8080/healthz
 ```
 
+The private dashboard runs on the same port 8080 and is bound only to `127.0.0.1` on the
+server. You can access it from your Mac through an SSH tunnel without a domain or router port
+forwarding:
+
+```bash
+ssh -N -L 8080:127.0.0.1:8080 calorie-server
+# Open http://127.0.0.1:8080/dashboard in a browser
+```
+
+If local port 8080 is already in use, change only the local port on the left:
+
+```bash
+ssh -N -L 18080:127.0.0.1:8080 calorie-server
+# Open http://127.0.0.1:18080/dashboard in a browser
+```
+
+The dashboard reads only the user configured by `OWNER_TELEGRAM_ID`. It shows today's calorie
+and macro targets, 7-day and 30-day calorie trends, the latest 12 entries, and each nutrition
+source. It refreshes every 60 seconds and also provides a manual refresh button.
+
 The provided `docker-compose.yml` deliberately applies these restrictions:
 
 - The bot uses long polling instead of a webhook
 - PostgreSQL is not exposed through a host port
-- The health-check port is bound only to `127.0.0.1`
+- The health-check and dashboard port is bound only to `127.0.0.1`
 - Database data and temporary images are kept in Docker volumes
 - The application container runs as a dedicated non-root user
 
