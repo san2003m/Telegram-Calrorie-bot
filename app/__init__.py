@@ -1,0 +1,1 @@
+"""Telegram calorie tracker application."""

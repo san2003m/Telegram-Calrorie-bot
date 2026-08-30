@@ -1,0 +1,36 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: calorie
+      POSTGRES_USER: calorie
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U calorie -d calorie"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://calorie:${POSTGRES_PASSWORD:-change-me}@db:5432/calorie
+      DATA_DIR: /data
+      HEALTH_HOST: 0.0.0.0
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${HEALTH_PORT:-8080}:8080"
+    volumes:
+      - calorie_data:/data
+
+volumes:
+  postgres_data:
+  calorie_data:
