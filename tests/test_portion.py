@@ -78,6 +78,20 @@ def test_piece_based_japanese_label_uses_explicit_package_count() -> None:
     assert portion_multiplier(target, parse_portion("全部")) == Decimal("6")
 
 
+def test_count_and_metric_basis_are_linked_for_japanese_label() -> None:
+    target = product(
+        basis_amount=Decimal("200"),
+        basis_unit="ml",
+        package_amount=Decimal("200"),
+        package_unit="ml",
+        piece_count=None,
+        basis_count_amount=Decimal("1"),
+    )
+
+    assert portion_multiplier(target, parse_portion("1本")) == Decimal("1")
+    assert portion_multiplier(target, parse_portion("2本")) == Decimal("2")
+
+
 def test_display_portion_uses_human_units() -> None:
     assert display_portion(parse_portion("0.5봉")) == "0.5포장"
     assert display_portion(parse_portion("70%")) == "70%"

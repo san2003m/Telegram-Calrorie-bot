@@ -78,6 +78,7 @@ class ProductVersion(Base):
     basis_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     basis_metric_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
     basis_metric_unit: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    basis_count_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
     basis_count_unit: Mapped[str | None] = mapped_column(String(32), nullable=True)
     kcal: Mapped[Decimal] = mapped_column(Numeric(12, 4))
     carbs_g: Mapped[Decimal] = mapped_column(Numeric(12, 4), default=Decimal("0"))

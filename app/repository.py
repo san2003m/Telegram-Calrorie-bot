@@ -114,6 +114,7 @@ async def create_product_version(
         basis_text=candidate.basis_text,
         basis_metric_amount=candidate.basis_metric_amount,
         basis_metric_unit=candidate.basis_metric_unit,
+        basis_count_amount=candidate.basis_count_amount,
         basis_count_unit=candidate.basis_count_unit,
         kcal=candidate.kcal,
         carbs_g=candidate.carbs_g,

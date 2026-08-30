@@ -50,6 +50,7 @@ async def test_create_schema_adds_columns_to_existing_database() -> None:
         "basis_text",
         "basis_metric_amount",
         "basis_metric_unit",
+        "basis_count_amount",
         "basis_count_unit",
         "sodium_mg",
         "salt_equivalent_g",

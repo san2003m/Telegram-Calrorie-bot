@@ -14,6 +14,7 @@ class PortionTarget(Protocol):
     package_unit: str | None
     servings_per_package: Decimal | None
     piece_count: Decimal | None
+    basis_count_amount: Decimal | None
 
 
 class PortionError(ValueError):
@@ -165,10 +166,14 @@ def portion_multiplier(target: PortionTarget, portion: ParsedPortion) -> Decimal
             raise PortionError("1회 제공량 정보가 없어 회분 단위로 계산할 수 없습니다.")
         multiplier = package * portion.amount / target.servings_per_package
     elif portion.unit == "piece":
-        package = package_multiplier(target)
-        if package is None or target.piece_count is None:
-            raise PortionError("총 낱개 수 정보가 없어 개수로 계산할 수 없습니다.")
-        multiplier = package * portion.amount / target.piece_count
+        basis_count_amount = getattr(target, "basis_count_amount", None)
+        if basis_count_amount is not None:
+            multiplier = portion.amount / basis_count_amount
+        else:
+            package = package_multiplier(target)
+            if package is None or target.piece_count is None:
+                raise PortionError("총 낱개 수 정보가 없어 개수로 계산할 수 없습니다.")
+            multiplier = package * portion.amount / target.piece_count
     elif portion.unit in {"g", "ml"}:
         raise PortionError(
             f"이 제품의 영양정보 기준 단위는 {target.basis_unit}라서 "

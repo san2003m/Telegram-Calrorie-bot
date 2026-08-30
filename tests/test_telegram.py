@@ -62,6 +62,7 @@ def test_japanese_recognition_preserves_basis_and_converts_salt() -> None:
             raw_text="1本（200ml）当たり",
             metric_amount=Decimal("200"),
             metric_unit="ml",
+            count_amount=Decimal("1"),
             count_unit="本",
         ),
         nutrients=Nutrients(
@@ -81,6 +82,7 @@ def test_japanese_recognition_preserves_basis_and_converts_salt() -> None:
 
     assert candidate.label_market == "JP"
     assert candidate.basis_text == "1本（200ml）当たり"
+    assert candidate.basis_count_amount == Decimal("1")
     assert candidate.basis_count_unit == "本"
     assert candidate.sodium_mg == Decimal("315.0")
     assert candidate.sodium_derived is True

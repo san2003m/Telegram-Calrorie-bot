@@ -95,6 +95,7 @@ async def test_country_label_metadata_is_persisted(sessions) -> None:
             "basis_text": "1本（200ml）当たり",
             "basis_metric_amount": Decimal("200"),
             "basis_metric_unit": "ml",
+            "basis_count_amount": Decimal("1"),
             "basis_count_unit": "本",
             "sodium_mg": Decimal("315.0"),
             "salt_equivalent_g": Decimal("0.8"),
@@ -112,6 +113,7 @@ async def test_country_label_metadata_is_persisted(sessions) -> None:
     assert stored is not None
     assert stored.label_market == "JP"
     assert stored.basis_text == "1本（200ml）当たり"
+    assert stored.basis_count_amount == Decimal("1.0000")
     assert stored.sodium_mg == Decimal("315.0000")
     assert stored.salt_equivalent_g == Decimal("0.8000")
     assert stored.sodium_derived is True

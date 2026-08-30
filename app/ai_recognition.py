@@ -41,6 +41,10 @@ NUTRITION_JSON_SCHEMA: dict[str, Any] = {
                     "type": ["string", "null"],
                     "enum": ["g", "ml", None],
                 },
+                "count_amount": {
+                    "type": ["number", "null"],
+                    "exclusiveMinimum": 0,
+                },
                 "count_unit": {"type": ["string", "null"], "maxLength": 32},
             },
             "required": [
@@ -49,6 +53,7 @@ NUTRITION_JSON_SCHEMA: dict[str, Any] = {
                 "raw_text",
                 "metric_amount",
                 "metric_unit",
+                "count_amount",
                 "count_unit",
             ],
         },
@@ -149,7 +154,8 @@ PROMPT = (
     "g/ml로 정규화합니다. 그렇지 않은 1食은 serving, 1包装/1袋은 package, "
     "1個/1本/1枚는 piece로 정규화합니다.\n"
     "- 1本(200ml)처럼 개수 표현과 중량·용량이 함께 있으면 nutrition_basis는 "
-    "200 ml, metric_amount=200, metric_unit=ml, count_unit='本'으로 반환합니다.\n"
+    "200 ml, metric_amount=200, metric_unit=ml, count_amount=1, count_unit='本'으로 "
+    "반환합니다. 2個(40g)라면 count_amount=2, count_unit='個'입니다.\n"
     "- 총 내용량, 총 제공 횟수, 총 낱개 수는 사진에서 명시적으로 보이는 경우에만 "
     "입력합니다.\n"
     "- 예를 들어 '총 6개입'은 piece_count=6이며, 추정한 개수는 입력하지 않습니다.\n"

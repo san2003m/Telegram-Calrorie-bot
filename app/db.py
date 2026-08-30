@@ -28,6 +28,7 @@ def _add_compatibility_columns(connection: Connection) -> None:
             "basis_text": "TEXT",
             "basis_metric_amount": "NUMERIC(12, 4)",
             "basis_metric_unit": "VARCHAR(24)",
+            "basis_count_amount": "NUMERIC(12, 4)",
             "basis_count_unit": "VARCHAR(32)",
             "sodium_mg": "NUMERIC(12, 4)",
             "salt_equivalent_g": "NUMERIC(12, 4)",

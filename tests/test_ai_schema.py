@@ -25,6 +25,7 @@ def test_recognition_parses_expected_json() -> None:
         "raw_text": "총 내용량 100g당",
         "metric_amount": 100,
         "metric_unit": "g",
+        "count_amount": null,
         "count_unit": null
       },
       "nutrients": {

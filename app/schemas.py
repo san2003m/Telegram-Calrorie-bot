@@ -19,6 +19,7 @@ class NutritionBasis(Amount):
     raw_text: str = Field(default="", max_length=160)
     metric_amount: Decimal | None = Field(default=None, gt=0)
     metric_unit: Literal["g", "ml"] | None = None
+    count_amount: Decimal | None = Field(default=None, gt=0)
     count_unit: str | None = Field(default=None, max_length=32)
 
 
@@ -79,6 +80,7 @@ class ProductCandidate(BaseModel):
     basis_text: str | None = None
     basis_metric_amount: Decimal | None = None
     basis_metric_unit: Literal["g", "ml"] | None = None
+    basis_count_amount: Decimal | None = None
     basis_count_unit: str | None = None
     sodium_mg: Decimal | None = None
     salt_equivalent_g: Decimal | None = None
