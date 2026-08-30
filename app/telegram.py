@@ -623,7 +623,7 @@ def create_router(context: BotContext) -> Router:
         strong_cached = [
             version
             for version in ranked_cached
-            if food_match_score(query, version.product.name) >= 600
+            if food_match_score(query, version.product.name) >= 900
         ][:5]
         if strong_cached:
             await message.answer(

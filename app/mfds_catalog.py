@@ -99,20 +99,34 @@ def search_terms(query: str) -> list[str]:
     clean = _clean_text(query)
     if not clean:
         return []
-    aliased = _alias_text(clean)
     results: list[str] = []
-    for term in (clean, aliased):
+
+    egg_aliased = clean.replace("계란", "달걀")
+    variants = [clean, egg_aliased]
+    for term in list(variants):
+        if "후라이" in term:
+            variants.append(term.replace("후라이", "프라이"))
+        if "프라이" in term:
+            variants.append(term.replace("프라이", "후라이"))
+    for term in variants:
         if term and term not in results:
             results.append(term)
+
+    aliased = _alias_text(clean)
     content_tokens = [
         token
         for token in re.findall(r"[0-9a-z가-힣]+", aliased.lower())
         if len(token) >= 2 and token not in _COOKING_WORDS
     ]
+    for token in list(content_tokens):
+        for cooking_word in sorted(_COOKING_WORDS, key=len, reverse=True):
+            if token.endswith(cooking_word) and len(token) > len(cooking_word) + 1:
+                content_tokens.append(token[: -len(cooking_word)])
+                break
     for token in sorted(content_tokens, key=len, reverse=True):
         if token not in results:
             results.append(token)
-    return results[:3]
+    return results[:5]
 
 
 def food_match_score(query: str, name: str) -> int:
@@ -327,7 +341,10 @@ class MfdsFoodCatalog:
                         candidate = candidate_from_item(item)
                         if candidate and candidate.external_id:
                             candidates[candidate.external_id] = candidate
-                    if len(candidates) >= limit * 2:
+                    if any(
+                        food_match_score(query, candidate.name) >= 900
+                        for candidate in candidates.values()
+                    ):
                         break
         except MfdsCatalogError:
             raise

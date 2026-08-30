@@ -61,6 +61,13 @@ def test_candidate_requires_complete_macro_values() -> None:
 
 def test_search_terms_and_ranking_handle_common_korean_aliases() -> None:
     assert search_terms("삶은 계란") == ["삶은 계란", "삶은 달걀", "달걀"]
+    assert search_terms("계란후라이") == [
+        "계란후라이",
+        "달걀후라이",
+        "계란프라이",
+        "달걀프라이",
+        "달걀",
+    ]
     assert food_match_score("삶은 계란", "달걀, 삶은것") >= 600
     assert food_match_score("삶은 계란", "달걀말이") < 600
 
@@ -69,11 +76,13 @@ async def test_search_parses_wrapped_json_and_deduplicates_results() -> None:
     requested_terms = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        requested_terms.append(request.url.params["FOOD_NM_KR"])
+        term = request.url.params["FOOD_NM_KR"]
+        requested_terms.append(term)
+        items = [mfds_item()] if term == "삶은 달걀" else []
         payload = {
             "response": {
                 "header": {"resultCode": "00", "resultMsg": "NORMAL SERVICE"},
-                "body": {"items": {"item": [mfds_item()]}},
+                "body": {"items": {"item": items}},
             }
         }
         return httpx.Response(200, json=payload)
@@ -84,7 +93,7 @@ async def test_search_parses_wrapped_json_and_deduplicates_results() -> None:
     )
     results = await catalog.search("삶은 계란", limit=5)
 
-    assert requested_terms == ["삶은 계란", "삶은 달걀", "달걀"]
+    assert requested_terms == ["삶은 계란", "삶은 달걀"]
     assert len(results) == 1
     assert results[0].name == "달걀, 삶은것"
 
@@ -95,6 +104,39 @@ def test_exact_food_outranks_a_dish_that_merely_contains_it() -> None:
     ranked = sorted(names, key=lambda name: food_match_score("삶은 달걀", name), reverse=True)
 
     assert ranked[0] == "달걀 · 삶은것"
+
+
+async def test_search_does_not_stop_on_many_weak_processed_food_matches() -> None:
+    requested_terms = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        term = request.url.params["FOOD_NM_KR"]
+        requested_terms.append(term)
+        if term == "계란후라이":
+            items = [
+                mfds_item(
+                    FOOD_CD=f"P{index}",
+                    FOOD_NM_KR=f"계란후라이맛 과자 {index}",
+                )
+                for index in range(20)
+            ]
+        elif term == "달걀후라이":
+            items = [mfds_item(FOOD_CD="D-FRIED-EGG", FOOD_NM_KR="달걀후라이")]
+        else:
+            items = []
+        return httpx.Response(
+            200,
+            json={
+                "header": {"resultCode": "00"},
+                "body": {"items": {"item": items}},
+            },
+        )
+
+    catalog = MfdsFoodCatalog("key", transport=httpx.MockTransport(handler))
+    results = await catalog.search("계란후라이", limit=5)
+
+    assert requested_terms == ["계란후라이", "달걀후라이"]
+    assert results[0].name == "달걀후라이"
 
 
 async def test_search_reports_api_rejection_without_exposing_key() -> None:
