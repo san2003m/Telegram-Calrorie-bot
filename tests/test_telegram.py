@@ -9,6 +9,7 @@ from app.telegram import (
     _candidate_with_basis_unit,
     _format_uptime,
     _recognition_result_text,
+    _stored_quick_portions,
 )
 
 
@@ -109,3 +110,28 @@ def test_small_salt_value_keeps_required_precision() -> None:
     )
 
     assert "식염상당량 0.02 g" in _recognition_result_text(result)
+
+
+def test_mfds_piece_shortcuts_use_metric_reference() -> None:
+    version = SimpleNamespace(
+        basis_amount=Decimal("100"),
+        basis_unit="g",
+        package_amount=None,
+        package_unit=None,
+        servings_per_package=None,
+        piece_count=None,
+        basis_count_amount=Decimal("2"),
+        raw_data={
+            "quick_portions": [
+                {"amount": "1", "unit": "piece", "label": "1개(참고 50g)"},
+                {"amount": "2", "unit": "piece", "label": "2개(참고 100g)"},
+            ]
+        },
+    )
+
+    shortcuts = _stored_quick_portions(version)
+
+    assert shortcuts == [
+        ("1개(참고 50g)", ParsedPortion(Decimal("1"), "piece")),
+        ("2개(참고 100g)", ParsedPortion(Decimal("2"), "piece")),
+    ]

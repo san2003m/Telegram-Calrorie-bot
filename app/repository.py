@@ -53,6 +53,58 @@ async def find_product_by_barcode(
     return await session.scalar(_current_product_query(barcode, owner_id))
 
 
+async def find_product_by_external_id(
+    session: AsyncSession, external_source: str, external_id: str
+) -> ProductVersion | None:
+    return await session.scalar(
+        select(ProductVersion)
+        .join(Product)
+        .options(joinedload(ProductVersion.product))
+        .where(
+            Product.external_source == external_source,
+            Product.external_id == external_id,
+            ProductVersion.is_current.is_(True),
+        )
+        .order_by(ProductVersion.created_at.desc())
+        .limit(1)
+    )
+
+
+def _escaped_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+async def search_catalog_products(
+    session: AsyncSession,
+    *,
+    source: str,
+    terms: list[str],
+    limit: int = 40,
+) -> list[ProductVersion]:
+    clean_terms = [term.strip() for term in terms if term.strip()]
+    if not clean_terms:
+        return []
+    name_filters = [
+        Product.name.ilike(f"%{_escaped_like(term)}%", escape="\\") for term in clean_terms
+    ]
+    return list(
+        (
+            await session.scalars(
+                select(ProductVersion)
+                .join(Product)
+                .options(joinedload(ProductVersion.product))
+                .where(
+                    Product.source == source,
+                    ProductVersion.is_current.is_(True),
+                    or_(*name_filters),
+                )
+                .order_by(ProductVersion.created_at.desc())
+                .limit(limit)
+            )
+        ).all()
+    )
+
+
 async def get_product_version(
     session: AsyncSession, version_id: int, owner_id: int
 ) -> ProductVersion | None:
@@ -81,10 +133,19 @@ async def create_product_version(
                 Product.owner_telegram_id == owner_id,
             )
         )
+    elif candidate.external_source and candidate.external_id:
+        product = await session.scalar(
+            select(Product).where(
+                Product.external_source == candidate.external_source,
+                Product.external_id == candidate.external_id,
+            )
+        )
 
     if product is None:
         product = Product(
             barcode=candidate.barcode,
+            external_source=candidate.external_source,
+            external_id=candidate.external_id,
             name=candidate.name,
             brand=candidate.brand,
             source=candidate.source,
@@ -132,6 +193,19 @@ async def create_product_version(
     session.add(version)
     await session.flush()
     return version
+
+
+async def get_or_create_catalog_product(
+    session: AsyncSession, candidate: ProductCandidate
+) -> ProductVersion:
+    if not candidate.external_source or not candidate.external_id:
+        raise ValueError("공개 카탈로그 항목에는 외부 출처와 ID가 필요합니다.")
+    existing = await find_product_by_external_id(
+        session, candidate.external_source, candidate.external_id
+    )
+    if existing is not None:
+        return existing
+    return await create_product_version(session, candidate, owner_id=None)
 
 
 async def add_intake(

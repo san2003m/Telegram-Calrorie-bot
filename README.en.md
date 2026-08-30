@@ -2,7 +2,7 @@
 
 [한국어](README.md) | **English**
 
-A personal-first Telegram bot for tracking calories and macros in packaged foods. Send a
+A personal-first Telegram bot for tracking calories and macros in packaged and general foods. Send a
 barcode to reuse a saved product. For products the bot has not seen before, it uses an OpenAI
 vision model to read photos of the product front and nutrition label. AI-extracted data is only
 recorded and cached after the user reviews it.
@@ -11,6 +11,7 @@ recorded and cached after the user reviews it.
 
 - Scan a barcode from a photo or enter its digits manually
 - Look up products in the local database, then Open Food Facts, then from photos with AI
+- Search general foods through MFDS with commands such as `/food 삶은 달걀` and cache results
 - Track calories, carbohydrates, protein, and fat
 - Detect Korean and Japanese nutrition-label formats and preserve the original basis text
 - Distinguish Korean sodium from Japanese salt equivalent and show derived conversions
@@ -37,6 +38,10 @@ Telegram photo
           └─ Product front + nutrition label
               └─ Structured extraction with OpenAI
                   └─ User review → Private DB cache → Choose amount → Save entry
+
+Telegram /food name
+  └─ Local cache → MFDS Food Nutrition Database
+      └─ Select food → Reference serving/piece or custom grams → Save entry
 ```
 
 Nutrition values are copied into each intake entry as a snapshot. Editing a product later does
@@ -48,11 +53,13 @@ users.
 
 1. A bot token created by sending `/newbot` to `@BotFather` on Telegram
 2. An [OpenAI API key](https://platform.openai.com/api-keys)
-3. Docker Engine and the Docker Compose plugin for deployment to a personal server
-4. VS Code and Python 3.11 or later for local development
+3. An [MFDS Food Nutrition Database API key](https://www.data.go.kr/data/15127578/openapi.do?recommendDataYn=Y) for general-food search
+4. Docker Engine and the Docker Compose plugin for deployment to a personal server
+5. VS Code and Python 3.11 or later for local development
 
 The bot can start, accept manual entries, and query the database without an OpenAI key. Only
-photo recognition for unknown products is disabled.
+photo recognition for unknown products is disabled. Without `MFDS_API_KEY`, other features keep
+working and only new `/food` searches are disabled; previously cached foods remain reusable.
 
 ## Quick local setup
 
@@ -75,6 +82,8 @@ TELEGRAM_BOT_TOKEN=123456:telegram-token
 OWNER_TELEGRAM_ID=123456789
 OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-5.6-terra
+MFDS_API_KEY=your-data-go-kr-service-key
+MFDS_API_TIMEOUT_SECONDS=8
 DATABASE_URL=sqlite+aiosqlite:///./data/calorie_bot.db
 APP_TIMEZONE=Asia/Seoul
 DATA_DIR=./data
@@ -195,6 +204,7 @@ docker compose cp bot:/data/logs ./calorie-logs
 | `/recent` | Show the eight most recent entries |
 | `/undo` | Mark the latest entry as undone without deleting it |
 | `/goal` | `/goal 2000 250 130 60` (kcal, carbohydrates, protein, fat) |
+| `/food` | Search general foods, for example `/food 삶은 달걀` |
 | `/barcode` | `/barcode 8801234567890` |
 | `/manual` | `/manual Chicken breast \| 165 \| 0 \| 31 \| 3.6` |
 | `/cancel` | Cancel an in-progress photo recognition or amount entry |
@@ -221,6 +231,12 @@ If units conflict—for example, Open Food Facts expresses a drink's nutrition p
 package volume is in `ml`—the bot does not convert automatically. Instead, it asks the user to
 confirm the package-label basis. A confirmed unit correction is stored as private product data
 and reused for later entries.
+
+Use `/food name` for non-packaged foods. The bot checks its local cache first and otherwise shows
+up to five matches from the MFDS Food Nutrition Database. Selected records are cached by their
+official food code. A reference-serving or piece button is shown only when the official response
+contains enough weight information for the conversion; otherwise the bot asks for grams instead
+of inventing a piece weight. Cooking method, moisture, and actual size can still change the result.
 
 The Japanese `食塩相当量` value is not sodium itself. The bot preserves the value printed on the
 package, derives sodium using `sodium (mg) = salt equivalent (g) × 1000 ÷ 2.54`, and explicitly
@@ -275,6 +291,8 @@ real Telegram or OpenAI requests.
 - A barcode does not contain nutrition facts, so a public database or photos of the packaging are
   still required.
 - Coverage of Korean products in Open Food Facts is inconsistent.
+- General-food search requires an approved public-data API key in `MFDS_API_KEY`.
+- Piece and serving shortcuts are offered only when the official data provides conversion evidence.
 - AI OCR can be wrong and is not appropriate for medical or therapeutic nutrition management.
 - Korean/Japanese detection is advisory and must be reviewed before saving.
 - Values marked `推定値`, `目安`, or as estimates on Korean labels generate a warning but are not
@@ -301,8 +319,7 @@ place before serving unrestricted users:
   catalog
 - Automated PostgreSQL backups, error tracking, and API usage and cost monitoring
 - Scheduled temporary-image expiration and, if needed, S3-compatible object storage
-- An adapter for Korean Ministry of Food and Drug Safety or public-data APIs, with a review of
-  their licensing terms
+- MFDS production-account approval and API-usage monitoring
 
 ## License and third-party rights
 

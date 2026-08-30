@@ -14,6 +14,7 @@ from app.db import Database
 from app.health import create_health_app
 from app.image_tools import cleanup_old_uploads
 from app.logging_config import configure_logging
+from app.mfds_catalog import MfdsFoodCatalog
 from app.telegram import BotContext, create_router
 
 
@@ -37,6 +38,14 @@ async def run() -> None:
         settings=settings,
         sessions=database.sessions,
         catalog=OpenFoodFactsCatalog(settings.openfoodfacts_user_agent),
+        food_catalog=(
+            MfdsFoodCatalog(
+                settings.mfds_api_key,
+                timeout_seconds=settings.mfds_api_timeout_seconds,
+            )
+            if settings.mfds_api_key
+            else None
+        ),
         recognizer=recognizer,
     )
 
@@ -50,6 +59,7 @@ async def run() -> None:
             BotCommand(command="recent", description="최근 기록"),
             BotCommand(command="undo", description="마지막 기록 취소"),
             BotCommand(command="goal", description="일일 목표 설정"),
+            BotCommand(command="food", description="일반 음식 검색"),
             BotCommand(command="manual", description="직접 기록"),
             BotCommand(command="cancel", description="사진 인식 취소"),
             BotCommand(command="help", description="사용법"),

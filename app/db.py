@@ -21,6 +21,10 @@ class Base(DeclarativeBase):
 def _add_compatibility_columns(connection: Connection) -> None:
     inspector = inspect(connection)
     additions = {
+        "products": {
+            "external_source": "VARCHAR(32)",
+            "external_id": "VARCHAR(80)",
+        },
         "product_versions": {
             "piece_count": "NUMERIC(12, 4)",
             "label_market": "VARCHAR(16) DEFAULT 'UNKNOWN'",
@@ -48,6 +52,12 @@ def _add_compatibility_columns(connection: Connection) -> None:
                 connection.execute(
                     text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
                 )
+    connection.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_product_external_source_id "
+            "ON products (external_source, external_id)"
+        )
+    )
 
 
 def _backfill_legacy_package_amounts(connection: Connection) -> None:

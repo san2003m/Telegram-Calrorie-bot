@@ -53,6 +53,11 @@ def configure_logging(
     logger.addHandler(console_handler)
     logger.addHandler(file_handler)
 
+    # Public-data API keys are query parameters. httpx's INFO request log includes
+    # the full URL, so keep dependency request logs below INFO to avoid key leakage.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
     return logger
 
 

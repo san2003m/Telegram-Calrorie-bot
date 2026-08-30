@@ -10,9 +10,12 @@ from app.repository import (
     create_product_version,
     ensure_user,
     find_product_by_barcode,
+    find_product_by_external_id,
     get_daily_summary,
     get_last_portion,
+    get_or_create_catalog_product,
     get_product_version,
+    search_catalog_products,
     undo_last_intake,
 )
 from app.schemas import ProductCandidate
@@ -118,6 +121,33 @@ async def test_country_label_metadata_is_persisted(sessions) -> None:
     assert stored.salt_equivalent_g == Decimal("0.8000")
     assert stored.sodium_derived is True
     assert stored.estimated_values is True
+
+
+async def test_external_catalog_food_is_cached_and_searchable(sessions) -> None:
+    public_food = candidate(barcode="").model_copy(
+        update={
+            "barcode": None,
+            "external_source": "mfds_food_db",
+            "external_id": "R000001",
+            "name": "달걀, 삶은것",
+            "source": "mfds_food_db",
+        }
+    )
+
+    async with sessions() as session:
+        first = await get_or_create_catalog_product(session, public_food)
+        second = await get_or_create_catalog_product(session, public_food)
+        await session.commit()
+        found = await find_product_by_external_id(session, "mfds_food_db", "R000001")
+        search_results = await search_catalog_products(
+            session,
+            source="mfds_food_db",
+            terms=["달걀"],
+        )
+
+    assert second.id == first.id
+    assert found is not None and found.id == first.id
+    assert [result.id for result in search_results] == [first.id]
 
 
 async def test_undo_marks_last_log_void(sessions) -> None:

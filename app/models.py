@@ -44,6 +44,8 @@ class Product(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     barcode: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    external_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    external_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
     name: Mapped[str] = mapped_column(String(240))
     brand: Mapped[str | None] = mapped_column(String(160), nullable=True)
     source: Mapped[str] = mapped_column(String(32), default="user")
@@ -58,6 +60,7 @@ class Product(Base):
 
     __table_args__ = (
         UniqueConstraint("barcode", "owner_telegram_id", name="uq_product_barcode_owner"),
+        Index("ix_product_external_source_id", "external_source", "external_id", unique=True),
     )
 
 

@@ -51,9 +51,22 @@ share-alike, and other obligations that apply to their particular reuse. See:
 - https://openfoodfacts.github.io/openfoodfacts-server/api/
 - https://world.openfoodfacts.org/terms-of-use
 
+## Korean Ministry of Food and Drug Safety public data
+
+The application can search and cache selected records from the Korean Ministry of Food and Drug
+Safety (MFDS) Food Nutrition Database through the Korean Public Data Portal API. No MFDS database
+dump is bundled with this repository. The dataset page currently describes the service as free and
+its permission scope as unrestricted; API access, quotas, and production approval remain subject to
+the portal's current terms and service status. Keep the source attribution when presenting cached
+records and review the current terms before redistribution or commercial operation.
+
+- https://www.data.go.kr/data/15127578/openapi.do
+- https://various.foodsafetykorea.go.kr/nutrient/industry/openApi/info.do
+
 ## External services and user content
 
-Telegram and OpenAI are external services. Their names, APIs, SDKs, and services are
+Telegram, OpenAI, and the Korean Public Data Portal are external services. Their names, APIs,
+SDKs, and services are
 subject to their respective terms, policies, and trademark rights. The Apache-2.0
 license for this repository does not grant rights to those services or marks.
 

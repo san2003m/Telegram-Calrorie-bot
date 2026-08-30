@@ -25,7 +25,7 @@ async def test_create_schema_adds_columns_to_existing_database() -> None:
     await database.create_schema()
 
     async with database.engine.connect() as connection:
-        product_columns = await connection.run_sync(
+        version_columns = await connection.run_sync(
             lambda sync_connection: {
                 column["name"]
                 for column in inspect(sync_connection).get_columns("product_versions")
@@ -34,6 +34,11 @@ async def test_create_schema_adds_columns_to_existing_database() -> None:
         log_columns = await connection.run_sync(
             lambda sync_connection: {
                 column["name"] for column in inspect(sync_connection).get_columns("intake_logs")
+            }
+        )
+        product_columns = await connection.run_sync(
+            lambda sync_connection: {
+                column["name"] for column in inspect(sync_connection).get_columns("products")
             }
         )
         package_measure = (
@@ -57,7 +62,8 @@ async def test_create_schema_adds_columns_to_existing_database() -> None:
         "sodium_derived",
         "salt_equivalent_derived",
         "estimated_values",
-    } <= product_columns
+    } <= version_columns
     assert {"input_amount", "input_unit"} <= log_columns
+    assert {"external_source", "external_id"} <= product_columns
     assert Decimal(str(package_measure.package_amount)) == Decimal("500")
     assert package_measure.package_unit == "ml"

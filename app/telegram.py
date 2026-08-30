@@ -22,6 +22,13 @@ from app.barcode import decode_barcodes, normalize_barcode
 from app.catalog import OpenFoodFactsCatalog
 from app.config import Settings
 from app.image_tools import preprocess_image, remove_private_image, write_private_image
+from app.mfds_catalog import (
+    MFDS_SOURCE,
+    MfdsCatalogError,
+    MfdsFoodCatalog,
+    food_match_score,
+    search_terms,
+)
 from app.models import IntakeLog, RecognitionJob
 from app.nutrition import normalize_salt, parse_positive_decimal, recognition_warnings
 from app.portion import (
@@ -40,8 +47,10 @@ from app.repository import (
     get_active_job,
     get_daily_summary,
     get_last_portion,
+    get_or_create_catalog_product,
     get_product_version,
     recent_logs,
+    search_catalog_products,
     set_goals,
     start_job,
     undo_last_intake,
@@ -56,6 +65,7 @@ class BotContext:
     settings: Settings
     sessions: async_sessionmaker[AsyncSession]
     catalog: OpenFoodFactsCatalog
+    food_catalog: MfdsFoodCatalog | None
     recognizer: NutritionRecognizer | None
     started_at: float = field(default_factory=monotonic)
 
@@ -124,6 +134,8 @@ def _product_text(version) -> str:
         lines.append(salt_text)
     if getattr(version, "estimated_values", False):
         lines.append("참고: 포장지에서 추정치 또는 참고값으로 표시된 영양정보")
+    if version.source == MFDS_SOURCE:
+        lines.append("출처: 식품의약품안전처 식품영양성분DB")
     package_details = []
     if version.package_amount is not None and version.package_unit:
         package_details.append(f"총 {_fmt(version.package_amount)} {version.package_unit}")
@@ -163,6 +175,28 @@ def _can_use_portion(version, portion: ParsedPortion) -> bool:
     return True
 
 
+def _stored_quick_portions(version) -> list[tuple[str, ParsedPortion]]:
+    raw_data = version.raw_data if isinstance(version.raw_data, dict) else {}
+    items = raw_data.get("quick_portions")
+    if not isinstance(items, list):
+        return []
+    result: list[tuple[str, ParsedPortion]] = []
+    for item in items[:4]:
+        if not isinstance(item, dict):
+            continue
+        try:
+            amount = Decimal(str(item.get("amount")))
+            unit = str(item.get("unit") or "")
+            portion = ParsedPortion(amount, unit)
+        except (InvalidOperation, ValueError):
+            continue
+        if not amount.is_finite() or amount <= 0 or not _can_use_portion(version, portion):
+            continue
+        label = str(item.get("label") or display_portion(portion)).strip()[:56]
+        result.append((label, portion))
+    return result
+
+
 def _portion_keyboard(version, last_log: IntakeLog | None) -> InlineKeyboardMarkup:
     version_id = version.id
     buttons: list[InlineKeyboardButton] = []
@@ -172,6 +206,14 @@ def _portion_keyboard(version, last_log: IntakeLog | None) -> InlineKeyboardMark
             InlineKeyboardButton(
                 text=f"지난번처럼 {display_portion(previous)}",
                 callback_data=f"portion:{version_id}:last",
+            )
+        )
+
+    for index, (label, _) in enumerate(_stored_quick_portions(version)):
+        buttons.append(
+            InlineKeyboardButton(
+                text=label,
+                callback_data=f"portion:{version_id}:quick{index}",
             )
         )
 
@@ -221,6 +263,38 @@ def _portion_keyboard(version, last_log: IntakeLog | None) -> InlineKeyboardMark
     )
     return InlineKeyboardMarkup(
         inline_keyboard=[buttons[index : index + 2] for index in range(0, len(buttons), 2)]
+    )
+
+
+def _food_results_keyboard(versions: list) -> InlineKeyboardMarkup:
+    rows = []
+    for version in versions:
+        raw_data = version.raw_data if isinstance(version.raw_data, dict) else {}
+        category = str(raw_data.get("category") or "").strip()
+        basis = f"{_fmt(version.basis_amount)}{version.basis_unit}"
+        detail = f"{_fmt(version.kcal)}kcal/{basis}"
+        if category:
+            detail = f"{category} · {detail}"
+        label = f"{version.product.name} · {detail}"
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=label[:62],
+                    callback_data=f"food:{version.id}",
+                )
+            ]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _rank_food_versions(query: str, versions: list) -> list:
+    return sorted(
+        versions,
+        key=lambda version: (
+            food_match_score(query, version.product.name),
+            version.product.name,
+        ),
+        reverse=True,
     )
 
 
@@ -370,6 +444,7 @@ def create_router(context: BotContext) -> Router:
             "/recent — 최근 기록\n"
             "/undo — 마지막 기록 취소\n"
             "/goal 2000 250 130 60 — kcal/탄/단/지 목표\n"
+            "/food 삶은 달걀 — 일반 음식 검색\n"
             "/barcode 8801234567890 — 바코드 숫자로 시작\n"
             "/manual 이름 | kcal | 탄수 | 단백질 | 지방 — 직접 기록\n"
             "/cancel — 진행 중인 사진 인식 취소\n"
@@ -526,6 +601,78 @@ def create_router(context: BotContext) -> Router:
             await session.commit()
         await message.answer(f"기록됨: {candidate.name} · {_fmt(log.kcal)} kcal")
 
+    @router.message(Command("food"))
+    async def food_search(message: Message) -> None:
+        if not await _guard(message, context.settings):
+            return
+        query = " ".join((message.text or "").partition(" ")[2].split())
+        if len(query) < 2 or len(query) > 50:
+            await message.answer("형식: /food 삶은 달걀 (2~50자 음식명)")
+            return
+
+        pending_portions.pop(message.from_user.id, None)
+        async with context.sessions() as session:
+            await ensure_user(session, message.from_user.id, context.settings.app_timezone)
+            cached = await search_catalog_products(
+                session,
+                source=MFDS_SOURCE,
+                terms=search_terms(query),
+            )
+            await session.commit()
+        ranked_cached = _rank_food_versions(query, cached)
+        strong_cached = [
+            version
+            for version in ranked_cached
+            if food_match_score(query, version.product.name) >= 600
+        ][:5]
+        if strong_cached:
+            await message.answer(
+                f"‘{query}’ 검색 결과입니다. 먹은 음식과 가장 가까운 항목을 선택하세요.",
+                reply_markup=_food_results_keyboard(strong_cached),
+            )
+            return
+
+        if context.food_catalog is None:
+            await message.answer(
+                "일반 음식 검색용 MFDS_API_KEY가 아직 설정되지 않았습니다.\n"
+                "공공데이터포털에서 식품영양성분DB 활용 신청 후 서버 .env에 키를 넣어주세요."
+            )
+            return
+
+        await message.answer(f"‘{query}’을(를) 식약처 영양 DB에서 찾는 중입니다.")
+        try:
+            candidates = await context.food_catalog.search(query, limit=5)
+        except MfdsCatalogError as exc:
+            logger.warning("MFDS food search failed: %s", exc)
+            if ranked_cached:
+                await message.answer(
+                    "식약처 DB 연결이 원활하지 않아 저장된 유사 항목을 보여드립니다.",
+                    reply_markup=_food_results_keyboard(ranked_cached[:5]),
+                )
+            else:
+                await message.answer(str(exc))
+            return
+
+        if not candidates:
+            await message.answer(
+                "검색 결과가 없습니다. ‘계란’ 대신 ‘달걀’처럼 다른 표현이나 "
+                "더 짧은 음식명으로 다시 검색해 주세요."
+            )
+            return
+
+        async with context.sessions() as session:
+            await ensure_user(session, message.from_user.id, context.settings.app_timezone)
+            versions = [
+                await get_or_create_catalog_product(session, candidate) for candidate in candidates
+            ]
+            await session.commit()
+        versions = _rank_food_versions(query, versions)[:5]
+        await message.answer(
+            f"‘{query}’ 검색 결과입니다. 먹은 음식과 가장 가까운 항목을 선택하세요.\n"
+            "조리법과 크기에 따라 실제 영양값은 달라질 수 있습니다.",
+            reply_markup=_food_results_keyboard(versions),
+        )
+
     @router.message(Command("barcode"))
     async def barcode_command(message: Message) -> None:
         if not await _guard(message, context.settings):
@@ -636,6 +783,13 @@ def create_router(context: BotContext) -> Router:
                     await callback.answer("지난 섭취량을 찾지 못했습니다.", show_alert=True)
                     return
                 portion = ParsedPortion(last_log.input_amount, last_log.input_unit)
+            elif action.startswith("quick"):
+                try:
+                    quick_index = int(action.removeprefix("quick"))
+                    _, portion = _stored_quick_portions(version)[quick_index]
+                except (ValueError, IndexError):
+                    await callback.answer("참고 섭취량을 찾지 못했습니다.", show_alert=True)
+                    return
             else:
                 await callback.answer("지원하지 않는 선택입니다.", show_alert=True)
                 return
@@ -662,6 +816,31 @@ def create_router(context: BotContext) -> Router:
             await callback.message.answer(
                 f"기록됨: {version.product.name} · {display_portion(portion)} · "
                 f"{_fmt(log.kcal)} kcal"
+            )
+
+    @router.callback_query(F.data.startswith("food:"))
+    async def select_food(callback: CallbackQuery) -> None:
+        if not callback.from_user or not _allowed(callback.from_user.id, context.settings):
+            await callback.answer("사용 권한이 없습니다.", show_alert=True)
+            return
+        try:
+            version_id = int((callback.data or "").split(":", 1)[1])
+        except (ValueError, IndexError):
+            await callback.answer("잘못된 요청입니다.", show_alert=True)
+            return
+        async with context.sessions() as session:
+            version = await get_product_version(session, version_id, callback.from_user.id)
+        if version is None or version.source != MFDS_SOURCE:
+            await callback.answer("음식 정보를 찾지 못했습니다.", show_alert=True)
+            return
+        await callback.answer()
+        await _clear_inline_keyboard(callback)
+        if callback.message:
+            await _offer_version(
+                context,
+                callback.message,
+                version,
+                user_id=callback.from_user.id,
             )
 
     @router.callback_query(F.data.startswith("log:"))

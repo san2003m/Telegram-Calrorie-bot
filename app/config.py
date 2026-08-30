@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_model: str = "gpt-5.6-terra"
 
+    mfds_api_key: str = ""
+    mfds_api_timeout_seconds: float = Field(default=8.0, ge=1.0, le=30.0)
+
     database_url: str = "sqlite+aiosqlite:///./data/calorie_bot.db"
     app_timezone: str = "Asia/Seoul"
     data_dir: Path = Path("data")

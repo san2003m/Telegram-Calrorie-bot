@@ -60,6 +60,8 @@ class NutritionRecognition(StrictModel):
 
 class ProductCandidate(BaseModel):
     barcode: str | None = None
+    external_source: str | None = None
+    external_id: str | None = None
     name: str
     brand: str | None = None
     basis_amount: Decimal
