@@ -21,6 +21,7 @@ recorded and cached after the user reviews it.
 - Run locally with SQLite or in Docker with PostgreSQL
 - Use Telegram long polling, with no domain, TLS certificate, or public web port required
 - Check the database and application status through `GET /healthz`
+- Preserve size-limited rotating logs across restarts
 
 ## How it works
 
@@ -74,6 +75,9 @@ OPENAI_MODEL=gpt-5.6-terra
 DATABASE_URL=sqlite+aiosqlite:///./data/calorie_bot.db
 APP_TIMEZONE=Asia/Seoul
 DATA_DIR=./data
+LOG_LEVEL=INFO
+LOG_MAX_BYTES=10485760
+LOG_BACKUP_COUNT=10
 ```
 
 In VS Code, open the repository, select `.venv/bin/python` as the Python interpreter, and run
@@ -109,6 +113,29 @@ Back up PostgreSQL before updating:
 ```bash
 docker compose exec -T db pg_dump -U calorie calorie > calorie-backup.sql
 docker compose up -d --build
+```
+
+Runtime logs are written to both the console and `DATA_DIR/logs/calorie-bot.log`. Under Docker,
+`/data/logs/calorie-bot.log` is stored in the persistent `calorie_data` volume, so it survives
+container replacement and server restarts. By default, each file is limited to 10 MiB and ten
+old files are retained. Docker's own standard-output logs are also limited to three 10 MiB files
+per service.
+
+```bash
+# Current Docker runtime logs
+docker compose logs -f bot
+
+# Persistent file log
+docker compose exec bot tail -f /data/logs/calorie-bot.log
+
+# Rotated files and their sizes
+docker compose exec bot ls -lh /data/logs
+```
+
+To copy the persistent logs to the host for a separate backup:
+
+```bash
+docker compose cp bot:/data/logs ./calorie-logs
 ```
 
 ## Usage
@@ -189,6 +216,8 @@ real Telegram or OpenAI requests.
 - The bot removes photos after successful completion, cancellation, or failure, and cleans up
   temporary photos older than 24 hours at startup. Excluding the photo directory from disk
   backups is still recommended.
+- Runtime logs may contain request status, public-database URLs with barcodes, Telegram update
+  IDs, AI token usage, and error traces. Treat log backups as potentially sensitive data.
 - The MVP creates tables automatically at startup and adds current fields through compatibility
   migrations. Before opening the service to the public, migrate to versioned schema migrations
   with Alembic.

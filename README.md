@@ -19,6 +19,7 @@
 - SQLite 로컬 실행, PostgreSQL Docker 운영
 - 롱폴링 방식이라 도메인·TLS·공개 웹 포트 불필요
 - DB 상태를 확인하는 `GET /healthz`
+- 재시작 후에도 남는 크기 제한 순환 로그
 
 ## 처리 흐름
 
@@ -70,6 +71,9 @@ OPENAI_MODEL=gpt-5.6-terra
 DATABASE_URL=sqlite+aiosqlite:///./data/calorie_bot.db
 APP_TIMEZONE=Asia/Seoul
 DATA_DIR=./data
+LOG_LEVEL=INFO
+LOG_MAX_BYTES=10485760
+LOG_BACKUP_COUNT=10
 ```
 
 VS Code에서는 폴더를 연 뒤 Python 인터프리터로 `.venv/bin/python`을 선택하고, Run and Debug의
@@ -103,6 +107,28 @@ curl http://127.0.0.1:8080/healthz
 ```bash
 docker compose exec -T db pg_dump -U calorie calorie > calorie-backup.sql
 docker compose up -d --build
+```
+
+실행 로그는 콘솔과 `DATA_DIR/logs/calorie-bot.log`에 동시에 기록됩니다. Docker에서는
+`/data/logs/calorie-bot.log`가 `calorie_data` 볼륨에 저장되므로 컨테이너를 다시 만들거나 서버를
+재시작해도 유지됩니다. 기본값은 파일당 10 MiB이며 이전 파일 10개를 보관합니다. Docker 자체의
+표준 출력 로그도 서비스별 10 MiB 파일 3개로 제한됩니다.
+
+```bash
+# Docker의 현재 실행 로그
+docker compose logs -f bot
+
+# 영속 파일 로그
+docker compose exec bot tail -f /data/logs/calorie-bot.log
+
+# 순환 파일 목록과 용량
+docker compose exec bot ls -lh /data/logs
+```
+
+로그 볼륨까지 별도로 백업하려면 다음처럼 호스트로 복사할 수 있습니다.
+
+```bash
+docker compose cp bot:/data/logs ./calorie-logs
 ```
 
 ## 사용법
@@ -171,6 +197,8 @@ Open Food Facts의 영양 기준이 `g`인데 실제 음료 포장은 `ml`인 �
 - 영양정보 표가 여러 열이면 `1회 제공량당`과 `100 g당` 열을 혼동하지 않았는지 확인해야 합니다.
 - 정상 완료·취소·오류 시 사진을 지우고 시작할 때 24시간 지난 임시 사진도 정리하지만, 디스크
   백업에는 사진 디렉터리를 포함하지 않는 편이 안전합니다.
+- 실행 로그에는 요청 상태, 바코드가 포함된 공개 DB URL, Telegram 업데이트 ID, AI 토큰 사용량,
+  오류 스택이 포함될 수 있으므로 로그 백업도 개인정보에 준해 관리해야 합니다.
 - 테이블은 MVP에서 시작 시 자동 생성되고 현재 추가 필드는 호환 마이그레이션으로 보완됩니다.
   공개 서비스로 확장하기 전에는 Alembic 기반 버전 마이그레이션으로 전환해야 합니다.
 

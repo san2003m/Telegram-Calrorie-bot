@@ -13,6 +13,7 @@ from app.config import get_settings
 from app.db import Database
 from app.health import create_health_app
 from app.image_tools import cleanup_old_uploads
+from app.logging_config import configure_logging
 from app.telegram import BotContext, create_router
 
 
@@ -62,6 +63,7 @@ async def run() -> None:
             port=settings.health_port,
             log_level="warning",
             access_log=False,
+            log_config=None,
         )
     )
     health_task = asyncio.create_task(health_server.serve(), name="health-server")
@@ -79,9 +81,13 @@ async def run() -> None:
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    settings = get_settings()
+    configure_logging(settings)
+    logging.getLogger(__name__).info(
+        "Persistent logging enabled: file=%s max_bytes=%s backup_count=%s",
+        settings.log_file,
+        settings.log_max_bytes,
+        settings.log_backup_count,
     )
     asyncio.run(run())
 

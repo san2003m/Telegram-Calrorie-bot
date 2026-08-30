@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     app_timezone: str = "Asia/Seoul"
     data_dir: Path = Path("data")
 
+    log_level: str = "INFO"
+    log_max_bytes: int = Field(default=10 * 1024 * 1024, ge=1024)
+    log_backup_count: int = Field(default=10, ge=1, le=100)
+
     health_host: str = "127.0.0.1"
     health_port: int = Field(default=8080, ge=1, le=65535)
     openfoodfacts_user_agent: str = (
@@ -31,9 +35,19 @@ class Settings(BaseSettings):
     def uploads_dir(self) -> Path:
         return self.data_dir / "uploads"
 
+    @property
+    def logs_dir(self) -> Path:
+        return self.data_dir / "logs"
+
+    @property
+    def log_file(self) -> Path:
+        return self.logs_dir / "calorie-bot.log"
+
     def ensure_directories(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.uploads_dir.mkdir(parents=True, exist_ok=True)
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        self.logs_dir.chmod(0o700)
 
 
 @lru_cache
