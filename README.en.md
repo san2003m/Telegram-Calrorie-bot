@@ -123,6 +123,30 @@ The dashboard reads only the user configured by `OWNER_TELEGRAM_ID`. It shows to
 and macro targets, 7-day and 30-day calorie trends, the latest 12 entries, and each nutrition
 source. It refreshes every 60 seconds and also provides a manual refresh button.
 
+### External access through Cloudflare Access
+
+For authenticated external HTTPS access, use Cloudflare Access with a remotely-managed Tunnel.
+Create the Access application and its allow policy before attaching the Tunnel's public hostname.
+Creating the public route first can expose the dashboard without authentication until the Access
+policy is applied.
+
+1. Add `calorie.example.com` as a self-hosted Cloudflare Access application.
+2. Allow one email address and choose an authentication method such as email OTP.
+3. Create a remotely-managed Tunnel and set the published application's service URL to
+   `http://bot:8080`.
+4. Put the Tunnel token directly in the server `.env` as `CLOUDFLARE_TUNNEL_TOKEN=...`.
+5. Start the Tunnel profile only after the token is ready.
+
+```bash
+docker compose --profile tunnel up -d cloudflared
+docker compose --profile tunnel logs -f cloudflared
+```
+
+`cloudflared` reaches `bot:8080` over the internal Compose network and does not open another host
+port. Anyone with the token can run the Tunnel, so never put it in Git, chat, or logs, and rotate it
+immediately if exposed. A regular `docker compose up -d` does not start the optional `tunnel`
+profile, so local and private deployments without a token are unaffected.
+
 The provided `docker-compose.yml` deliberately applies these restrictions:
 
 - The bot uses long polling instead of a webhook

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException, Response
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -42,6 +42,10 @@ def create_health_app(
         except Exception as exc:
             raise HTTPException(status_code=503, detail="database unavailable") from exc
         return {"status": "ok"}
+
+    @app.get("/", include_in_schema=False)
+    async def dashboard_root() -> RedirectResponse:
+        return RedirectResponse(url="/dashboard", status_code=307)
 
     @app.get("/dashboard", response_class=HTMLResponse)
     async def dashboard() -> HTMLResponse:

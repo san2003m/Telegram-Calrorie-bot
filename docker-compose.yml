@@ -41,6 +41,24 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    pull_policy: always
+    restart: unless-stopped
+    profiles:
+      - tunnel
+    command: tunnel --no-autoupdate --loglevel info run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on:
+      bot:
+        condition: service_started
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 volumes:
   postgres_data:
   calorie_data:

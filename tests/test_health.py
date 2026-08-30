@@ -99,9 +99,12 @@ async def test_dashboard_page_and_api_are_private_owner_views() -> None:
     app = create_health_app(sessions, owner_telegram_id=4321)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        root = await client.get("/", follow_redirects=False)
         page = await client.get("/dashboard")
         api = await client.get("/api/dashboard")
 
+    assert root.status_code == 307
+    assert root.headers["location"] == "/dashboard"
     assert page.status_code == 200
     assert "오늘, 잘 먹고 있나요?" in page.text
     assert page.headers["x-frame-options"] == "DENY"
