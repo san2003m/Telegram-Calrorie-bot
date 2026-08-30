@@ -89,6 +89,14 @@ async def test_search_parses_wrapped_json_and_deduplicates_results() -> None:
     assert results[0].name == "달걀, 삶은것"
 
 
+def test_exact_food_outranks_a_dish_that_merely_contains_it() -> None:
+    names = ["삶은 달걀이 통째로 들어있는 쫄면", "달걀 · 삶은것", "달걀 · 삶은것 · 노른자"]
+
+    ranked = sorted(names, key=lambda name: food_match_score("삶은 달걀", name), reverse=True)
+
+    assert ranked[0] == "달걀 · 삶은것"
+
+
 async def test_search_reports_api_rejection_without_exposing_key() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(

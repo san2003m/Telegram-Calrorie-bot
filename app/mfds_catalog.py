@@ -130,9 +130,11 @@ def food_match_score(query: str, name: str) -> int:
     score = matched * 100
     if matched == len(query_tokens):
         score += 500
+    if set(query_tokens) == set(name_tokens):
+        score += 400
     if query_joined in name_joined:
-        score += 150
-    score -= max(0, len(name_tokens) - len(query_tokens)) * 3
+        score += 50
+    score -= max(0, len(name_tokens) - len(query_tokens)) * 40
     return score
 
 
@@ -193,7 +195,8 @@ def _quick_portions(
 
 def candidate_from_item(item: dict) -> ProductCandidate | None:
     external_id = _clean_text(item.get("FOOD_CD"))
-    name = _clean_text(item.get("FOOD_NM_KR"))
+    source_food_name = _clean_text(item.get("FOOD_NM_KR"))
+    name = " · ".join(part.strip() for part in source_food_name.split("_") if part.strip())
     basis = _basis(item.get("SERVING_SIZE"))
     kcal = _decimal(item.get("AMT_NUM1"))
     protein = _decimal(item.get("AMT_NUM3"))
@@ -213,6 +216,7 @@ def candidate_from_item(item: dict) -> ProductCandidate | None:
 
     raw_data = {
         "food_code": external_id,
+        "source_food_name": source_food_name,
         "database_group": _clean_text(item.get("DB_GRP_NM")),
         "category": category,
         "source_name": source_name,
