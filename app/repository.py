@@ -5,11 +5,20 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import Select, desc, or_, select, update
+from sqlalchemy import Select, desc, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
-from app.models import IntakeLog, Product, ProductVersion, RecognitionJob, User, utc_now
+from app.models import (
+    AIUsage,
+    IntakeLog,
+    Product,
+    ProductVersion,
+    RecipeParseCache,
+    RecognitionJob,
+    User,
+    utc_now,
+)
 from app.nutrition import MacroTotals
 from app.schemas import ProductCandidate
 
@@ -99,6 +108,41 @@ async def search_catalog_products(
                     or_(*name_filters),
                 )
                 .order_by(ProductVersion.created_at.desc())
+                .limit(limit)
+            )
+        ).all()
+    )
+
+
+async def search_recipe_products(
+    session: AsyncSession,
+    *,
+    owner_id: int,
+    terms: list[str],
+    limit: int = 40,
+) -> list[ProductVersion]:
+    clean_terms = [term.strip() for term in terms if term.strip()]
+    if not clean_terms:
+        return []
+    name_filters = [
+        Product.name.ilike(f"%{_escaped_like(term)}%", escape="\\") for term in clean_terms
+    ]
+    return list(
+        (
+            await session.scalars(
+                select(ProductVersion)
+                .join(Product)
+                .options(joinedload(ProductVersion.product))
+                .where(
+                    ProductVersion.is_current.is_(True),
+                    Product.source != "recipe",
+                    or_(Product.owner_telegram_id.is_(None), Product.owner_telegram_id == owner_id),
+                    or_(*name_filters),
+                )
+                .order_by(
+                    desc(Product.owner_telegram_id == owner_id),
+                    ProductVersion.created_at.desc(),
+                )
                 .limit(limit)
             )
         ).all()
@@ -374,4 +418,114 @@ async def set_goals(
     user.carb_goal = carbs
     user.protein_goal = protein
     user.fat_goal = fat
+
+
+async def get_recipe_parse_cache(
+    session: AsyncSession,
+    *,
+    user_id: int,
+    input_hash: str,
+    parser_version: str,
+) -> RecipeParseCache | None:
+    return await session.scalar(
+        select(RecipeParseCache).where(
+            RecipeParseCache.user_telegram_id == user_id,
+            RecipeParseCache.input_hash == input_hash,
+            RecipeParseCache.parser_version == parser_version,
+        )
+    )
+
+
+async def save_recipe_parse_cache(
+    session: AsyncSession,
+    *,
+    user_id: int,
+    input_hash: str,
+    parser_version: str,
+    result_json: dict,
+    used_ai: bool,
+) -> RecipeParseCache:
+    cached = await get_recipe_parse_cache(
+        session,
+        user_id=user_id,
+        input_hash=input_hash,
+        parser_version=parser_version,
+    )
+    if cached is None:
+        cached = RecipeParseCache(
+            user_telegram_id=user_id,
+            input_hash=input_hash,
+            parser_version=parser_version,
+            result_json=result_json,
+            used_ai=used_ai,
+        )
+        session.add(cached)
+    else:
+        cached.result_json = result_json
+        cached.used_ai = used_ai
+    await session.flush()
+    return cached
+
+
+def _usage_window(timezone_name: str, *, now: datetime | None = None) -> tuple[datetime, datetime]:
+    tz = ZoneInfo(timezone_name)
+    local_now = (now or datetime.now(UTC)).astimezone(tz)
+    day_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    month_start = day_start.replace(day=1)
+    return day_start.astimezone(UTC), month_start.astimezone(UTC)
+
+
+async def reserve_recipe_ai_usage(
+    session: AsyncSession,
+    *,
+    user_id: int,
+    input_hash: str,
+    timezone_name: str,
+    daily_limit: int,
+    monthly_limit: int,
+) -> tuple[AIUsage | None, str | None]:
+    day_start, month_start = _usage_window(timezone_name)
+    base = (
+        AIUsage.user_telegram_id == user_id,
+        AIUsage.feature == "recipe_parse",
+    )
+    daily_count = await session.scalar(
+        select(func.count(AIUsage.id)).where(*base, AIUsage.created_at >= day_start)
+    )
+    if daily_limit <= 0 or (daily_count or 0) >= daily_limit:
+        return None, "오늘의 AI 레시피 분석 한도에 도달했습니다. 내일 다시 시도해 주세요."
+    monthly_count = await session.scalar(
+        select(func.count(AIUsage.id)).where(*base, AIUsage.created_at >= month_start)
+    )
+    if monthly_limit <= 0 or (monthly_count or 0) >= monthly_limit:
+        return None, "이번 달의 AI 레시피 분석 한도에 도달했습니다."
+    usage = AIUsage(
+        user_telegram_id=user_id,
+        feature="recipe_parse",
+        input_hash=input_hash,
+        status="started",
+    )
+    session.add(usage)
+    await session.flush()
+    return usage, None
+
+
+async def finish_ai_usage(
+    session: AsyncSession,
+    usage_id: int,
+    *,
+    status: str,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    total_tokens: int = 0,
+    error: str | None = None,
+) -> None:
+    usage = await session.get(AIUsage, usage_id)
+    if usage is None:
+        return
+    usage.status = status[:24]
+    usage.input_tokens = max(0, input_tokens)
+    usage.output_tokens = max(0, output_tokens)
+    usage.total_tokens = max(0, total_tokens)
+    usage.error = error[:500] if error else None
     await session.flush()

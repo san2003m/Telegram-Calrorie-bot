@@ -11,6 +11,7 @@
 - 바코드 사진 또는 숫자 입력
 - 로컬 DB → Open Food Facts → AI 사진 인식 순서의 상품 조회
 - `/food 삶은 달걀` 형식의 식약처 일반 음식 검색과 검색 결과 캐시
+- `/recipe 김치볶음밥`으로 재료 합계와 1인분 칼로리·탄단지 계산
 - kcal, 탄수화물, 단백질, 지방 기록
 - 한국·일본 영양성분표 자동 판별과 표시 기준 원문 보존
 - 한국의 나트륨과 일본의 식염상당량을 구분하고 환산값 표시
@@ -40,6 +41,10 @@ Telegram 사진
 Telegram /food 음식명
   └─ 로컬 캐시 → 식약처 식품영양성분DB
       └─ 음식 선택 → 참고 1회분/개수 또는 직접 g 입력 → 기록
+
+Telegram /recipe 레시피명
+  └─ 줄 단위 파서 → 필요한 경우에만 OpenAI로 재료 문장 구조화
+      └─ 로컬 캐시/식약처 DB 매칭 → 사용자 확인 → 1인분 상품으로 저장 → 기록
 ```
 
 영양값은 섭취 기록에도 스냅샷으로 복사됩니다. 나중에 상품 정보를 수정해도 과거 합계가
@@ -54,9 +59,9 @@ Telegram /food 음식명
 4. 개인 서버 운영 시 Docker Engine과 Docker Compose 플러그인
 5. 로컬 개발 시 VS Code와 Python 3.11 이상
 
-OpenAI 키 없이도 봇 시작, 수동 기록, DB 조회는 됩니다. 처음 보는 상품의 사진 인식만
-비활성화됩니다. `MFDS_API_KEY`가 없으면 `/food` 외의 기능은 그대로 동작하고 일반 음식의
-신규 검색만 비활성화됩니다. 이미 캐시된 일반 음식은 API 호출 없이 다시 사용할 수 있습니다.
+OpenAI 키 없이도 봇 시작, 수동 기록, DB 조회와 줄 단위 레시피 입력은 됩니다. 처음 보는 상품의
+사진 인식과 자연어 레시피 해석만 비활성화됩니다. `MFDS_API_KEY`가 없으면 `/food`의 신규 검색과
+레시피의 신규 재료 검색이 비활성화됩니다. 이미 캐시된 일반 음식은 API 호출 없이 재사용됩니다.
 
 ## 가장 빠른 로컬 실행
 
@@ -78,6 +83,13 @@ TELEGRAM_BOT_TOKEN=123456:telegram-token
 OWNER_TELEGRAM_ID=123456789
 OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-5.6-terra
+OPENAI_RECIPE_MODEL=gpt-5.6-luna
+RECIPE_AI_DAILY_LIMIT=10
+RECIPE_AI_MONTHLY_LIMIT=100
+RECIPE_AI_MAX_INPUT_CHARS=2000
+RECIPE_AI_MAX_OUTPUT_TOKENS=800
+RECIPE_MAX_INGREDIENTS=20
+RECIPE_AI_COOLDOWN_SECONDS=10
 MFDS_API_KEY=공공데이터포털-일반인증키
 MFDS_API_TIMEOUT_SECONDS=8
 DATABASE_URL=sqlite+aiosqlite:///./data/calorie_bot.db
@@ -195,6 +207,7 @@ docker compose cp bot:/data/logs ./calorie-logs
 | `/undo` | 마지막 기록을 삭제하지 않고 취소 상태로 전환 |
 | `/goal` | `/goal 2000 250 130 60` (kcal·탄·단·지) |
 | `/food` | `/food 삶은 달걀`처럼 일반 음식 검색 |
+| `/recipe` | `/recipe 김치볶음밥` 후 재료와 총 인분 입력 |
 | `/barcode` | `/barcode 8801234567890` |
 | `/manual` | `/manual 닭가슴살 | 165 | 0 | 31 | 3.6` |
 | `/cancel` | 진행 중인 사진 인식 또는 섭취량 입력 취소 |
@@ -226,6 +239,13 @@ Open Food Facts의 영양 기준이 `g`인데 실제 음료 포장은 `ml`인 �
 입력을 사용합니다. 조리법·수분량·실제 크기에 따라 영양값이 달라질 수 있으므로 가장 가까운
 항목과 섭취량을 직접 확인해야 합니다.
 
+레시피는 `/recipe 레시피명`을 보낸 뒤 `밥 420g`, `김치 160g`, `달걀 2개`, `총 2인분`처럼
+한 줄씩 입력합니다. 이 형식은 OpenAI를 호출하지 않습니다. 자연어 문장은 OpenAI가 재료명·양·
+단위만 strict JSON으로 구조화하고, 실제 영양값 검색과 합산은 식품 DB와 Python 코드가 수행합니다.
+재료별 DB 매칭과 kcal를 확인한 뒤 저장하면 레시피가 `1인분` 기준의 개인 상품이 되어 기존
+섭취량 버튼, 오늘 합계, 최근 기록, 대시보드에서 그대로 사용할 수 있습니다. 큰술·작은술·컵은
+부피로만 변환하며, 식품 DB가 g 기준이면 밀도를 추정하지 않고 g 입력을 요청합니다.
+
 일본 영양표의 `食塩相当量`은 나트륨 자체가 아닙니다. 봇은 포장지 원문값을 그대로 저장한 뒤
 `나트륨(mg) = 식염상당량(g) × 1000 ÷ 2.54`로 환산하고 화면에 `환산`임을 표시합니다.
 한국 라벨에 나트륨만 있으면 반대 방향으로 식염상당량을 계산합니다. `糖質`·`糖類`·`食物繊維`는
@@ -249,16 +269,22 @@ Open Food Facts의 영양 기준이 `g`인데 실제 음료 포장은 `ml`인 �
 - AI는 염분 단위를 환산하지 않고 원문값만 반환하며 환산은 Python 코드가 수행
 - 수치 불일치 및 낮은 신뢰도 경고 후 반드시 사용자 확인
 - 확인한 결과를 DB에 넣어 같은 바코드는 다시 호출하지 않음
+- 줄 단위 레시피는 AI를 호출하지 않고, 자연어일 때만 레시피당 1회 호출
+- 레시피 입력 2,000자·재료 20개·출력 800토큰 제한
+- 사용자별 하루 10회·월 100회·10초 쿨다운과 동시 요청 1개 제한
+- 같은 레시피 입력은 사용자별 해시 캐시를 재사용하고 실제 입출력 토큰을 DB에 기록
+- 레시피 AI에는 웹 검색·파일 검색·코드 실행 도구를 제공하지 않음
 
 정확한 API 단가는 모델과 시점에 따라 바뀌므로 [OpenAI 가격 페이지](https://openai.com/api/pricing/)에서
-확인하세요. 모델은 `.env`의 `OPENAI_MODEL`로 교체할 수 있습니다. 관련 구현은
+확인하세요. 사진 모델은 `OPENAI_MODEL`, 자연어 레시피 모델은 `OPENAI_RECIPE_MODEL`로 교체할 수
+있습니다. 관련 구현은
 [Responses API 문서](https://developers.openai.com/api/reference/resources/responses/methods/create)와
 [이미지 입력 가이드](https://developers.openai.com/api/docs/guides/images-vision)를 기준으로 했습니다.
 
 ## 테스트와 품질 검사
 
-실제 Telegram/OpenAI 호출 없이 계산, 이미지 축소, AI JSON 검증, 공개 카탈로그 변환, DB 캐시,
-사용자 격리, 일일 합계, 취소를 검사합니다.
+실제 Telegram/OpenAI 호출 없이 계산, 이미지 축소, AI JSON 검증, 레시피 파싱·한도·캐시,
+공개 카탈로그 변환, 사용자 격리, 일일 합계, 취소를 검사합니다.
 
 ```bash
 .venv/bin/ruff check .
@@ -272,6 +298,8 @@ Open Food Facts의 영양 기준이 `g`인데 실제 음료 포장은 `ml`인 �
 - Open Food Facts의 한국 상품 커버리지는 일정하지 않습니다.
 - 식약처 일반 음식 검색에는 공공데이터포털 활용신청과 `MFDS_API_KEY`가 필요합니다.
 - 일반 음식의 1회분·개당 중량은 공식 응답에 환산 근거가 있을 때만 버튼으로 제공합니다.
+- 레시피 계산은 입력량과 선택한 식품 DB 항목의 합계이며 조리 중 버린 기름·국물과 수분 변화는
+  자동 보정하지 않습니다. 저장 전 재료별 DB 매칭을 확인해야 합니다.
 - AI OCR은 틀릴 수 있어 의료·치료 목적의 정밀 영양 관리에는 적합하지 않습니다.
 - 한국·일본 판별은 포장지 언어와 표시 형식에 기반한 보조 정보이므로 저장 전 직접 확인해야 합니다.
 - 일본의 `推定値`·`目安` 또는 한국의 추정치는 그대로 경고하지만 실제 분석값으로 보정하지 않습니다.

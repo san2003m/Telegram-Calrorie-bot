@@ -15,7 +15,11 @@ from app.repository import (
     get_last_portion,
     get_or_create_catalog_product,
     get_product_version,
+    get_recipe_parse_cache,
+    reserve_recipe_ai_usage,
+    save_recipe_parse_cache,
     search_catalog_products,
+    search_recipe_products,
     undo_last_intake,
 )
 from app.schemas import ProductCandidate
@@ -167,3 +171,94 @@ async def test_undo_marks_last_log_void(sessions) -> None:
 
         assert undone is not None
         assert undone.voided_at is not None
+
+
+async def test_recipe_parse_cache_is_private_and_reused(sessions) -> None:
+    payload = {
+        "recipe_name": "달걀밥",
+        "servings": "1",
+        "ingredients": [
+            {
+                "raw_text": "달걀 2개",
+                "name": "달걀",
+                "amount": "2",
+                "unit": "piece",
+                "preparation": "unknown",
+                "note": None,
+            }
+        ],
+    }
+    async with sessions() as session:
+        await ensure_user(session, 1, "Asia/Seoul")
+        await ensure_user(session, 2, "Asia/Seoul")
+        first = await save_recipe_parse_cache(
+            session,
+            user_id=1,
+            input_hash="a" * 64,
+            parser_version="recipe-v1",
+            result_json=payload,
+            used_ai=True,
+        )
+        second = await save_recipe_parse_cache(
+            session,
+            user_id=1,
+            input_hash="a" * 64,
+            parser_version="recipe-v1",
+            result_json=payload,
+            used_ai=True,
+        )
+        await session.commit()
+        other_user = await get_recipe_parse_cache(
+            session,
+            user_id=2,
+            input_hash="a" * 64,
+            parser_version="recipe-v1",
+        )
+
+    assert first.id == second.id
+    assert other_user is None
+
+
+async def test_recipe_ai_quota_counts_reserved_attempts(sessions) -> None:
+    async with sessions() as session:
+        await ensure_user(session, 1, "Asia/Seoul")
+        first, first_error = await reserve_recipe_ai_usage(
+            session,
+            user_id=1,
+            input_hash="a" * 64,
+            timezone_name="Asia/Seoul",
+            daily_limit=1,
+            monthly_limit=10,
+        )
+        await session.commit()
+        second, second_error = await reserve_recipe_ai_usage(
+            session,
+            user_id=1,
+            input_hash="b" * 64,
+            timezone_name="Asia/Seoul",
+            daily_limit=1,
+            monthly_limit=10,
+        )
+
+    assert first is not None
+    assert first_error is None
+    assert second is None
+    assert "오늘" in (second_error or "")
+
+
+async def test_recipe_search_can_use_private_or_public_food_but_not_recipe(sessions) -> None:
+    private_food = candidate().model_copy(update={"name": "비밀 달걀", "source": "manual"})
+    recipe = candidate(barcode="").model_copy(
+        update={"barcode": None, "name": "달걀 레시피", "source": "recipe"}
+    )
+    async with sessions() as session:
+        await ensure_user(session, 1, "Asia/Seoul")
+        await ensure_user(session, 2, "Asia/Seoul")
+        private_version = await create_product_version(session, private_food, owner_id=1)
+        await create_product_version(session, recipe, owner_id=1)
+        await session.commit()
+        owner_results = await search_recipe_products(session, owner_id=1, terms=["달걀"])
+        other_results = await search_recipe_products(session, owner_id=2, terms=["달걀"])
+
+    assert [item.id for item in owner_results] == [private_version.id]
+    assert other_results == []

@@ -12,6 +12,7 @@ recorded and cached after the user reviews it.
 - Scan a barcode from a photo or enter its digits manually
 - Look up products in the local database, then Open Food Facts, then from photos with AI
 - Search general foods through MFDS with commands such as `/food 삶은 달걀` and cache results
+- Calculate recipe totals and per-serving calories and macros from ingredients with `/recipe`
 - Track calories, carbohydrates, protein, and fat
 - Detect Korean and Japanese nutrition-label formats and preserve the original basis text
 - Distinguish Korean sodium from Japanese salt equivalent and show derived conversions
@@ -42,6 +43,10 @@ Telegram photo
 Telegram /food name
   └─ Local cache → MFDS Food Nutrition Database
       └─ Select food → Reference serving/piece or custom grams → Save entry
+
+Telegram /recipe name
+  └─ Line parser → OpenAI ingredient extraction only when needed
+      └─ Local/MFDS matching → User review → Save as one-serving product → Save entry
 ```
 
 Nutrition values are copied into each intake entry as a snapshot. Editing a product later does
@@ -57,9 +62,10 @@ users.
 4. Docker Engine and the Docker Compose plugin for deployment to a personal server
 5. VS Code and Python 3.11 or later for local development
 
-The bot can start, accept manual entries, and query the database without an OpenAI key. Only
-photo recognition for unknown products is disabled. Without `MFDS_API_KEY`, other features keep
-working and only new `/food` searches are disabled; previously cached foods remain reusable.
+The bot can start, accept manual entries, query the database, and parse line-based recipes without
+an OpenAI key. Only unknown-product photo recognition and natural-language recipe extraction are
+disabled. Without `MFDS_API_KEY`, new `/food` and recipe-ingredient searches are disabled, while
+previously cached foods remain reusable.
 
 ## Quick local setup
 
@@ -82,6 +88,13 @@ TELEGRAM_BOT_TOKEN=123456:telegram-token
 OWNER_TELEGRAM_ID=123456789
 OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-5.6-terra
+OPENAI_RECIPE_MODEL=gpt-5.6-luna
+RECIPE_AI_DAILY_LIMIT=10
+RECIPE_AI_MONTHLY_LIMIT=100
+RECIPE_AI_MAX_INPUT_CHARS=2000
+RECIPE_AI_MAX_OUTPUT_TOKENS=800
+RECIPE_MAX_INGREDIENTS=20
+RECIPE_AI_COOLDOWN_SECONDS=10
 MFDS_API_KEY=your-data-go-kr-service-key
 MFDS_API_TIMEOUT_SECONDS=8
 DATABASE_URL=sqlite+aiosqlite:///./data/calorie_bot.db
@@ -205,6 +218,7 @@ docker compose cp bot:/data/logs ./calorie-logs
 | `/undo` | Mark the latest entry as undone without deleting it |
 | `/goal` | `/goal 2000 250 130 60` (kcal, carbohydrates, protein, fat) |
 | `/food` | Search general foods, for example `/food 삶은 달걀` |
+| `/recipe` | Send `/recipe 김치볶음밥`, then ingredients and total servings |
 | `/barcode` | `/barcode 8801234567890` |
 | `/manual` | `/manual Chicken breast \| 165 \| 0 \| 31 \| 3.6` |
 | `/cancel` | Cancel an in-progress photo recognition or amount entry |
@@ -238,6 +252,14 @@ official food code. A reference-serving or piece button is shown only when the o
 contains enough weight information for the conversion; otherwise the bot asks for grams instead
 of inventing a piece weight. Cooking method, moisture, and actual size can still change the result.
 
+For a recipe, send `/recipe name`, then lines such as `rice 420g`, `kimchi 160g`, `egg 2개`, and
+`총 2인분`. This structured form does not call OpenAI. For free-form text, OpenAI extracts only
+ingredient names, amounts, and units into strict JSON; food lookup and arithmetic remain in the
+MFDS-backed Python code. After reviewing every ingredient match, save the recipe as a private
+one-serving product so existing intake buttons, daily totals, recent entries, and the dashboard can
+reuse it. Tablespoons, teaspoons, and cups are converted to volume only; the bot does not invent a
+volume-to-weight density when the selected food is measured in grams.
+
 The Japanese `食塩相当量` value is not sodium itself. The bot preserves the value printed on the
 package, derives sodium using `sodium (mg) = salt equivalent (g) × 1000 ÷ 2.54`, and explicitly
 marks the result as derived. If a Korean label contains only sodium, the inverse conversion is
@@ -267,17 +289,23 @@ API.
 - The bot warns about numerical inconsistencies or low confidence and always requires user review
 - Confirmed results are stored in the database, so the same barcode does not trigger another API
   request
+- Structured recipe lines avoid OpenAI; free-form recipes make at most one model call per recipe
+- Recipe input is capped at 2,000 characters, 20 ingredients, and 800 output tokens
+- Per-user limits default to 10 calls per day, 100 per month, a 10-second cooldown, and one
+  concurrent request
+- Identical recipe input reuses a per-user hash cache, and actual input/output token usage is stored
+- The recipe model receives no web, file, code-execution, or other tools
 
 API pricing changes by model and over time. Check the
-[OpenAI pricing page](https://openai.com/api/pricing/) for current rates. You can select a model
-with `OPENAI_MODEL` in `.env`. The implementation follows the
+[OpenAI pricing page](https://openai.com/api/pricing/) for current rates. Select `OPENAI_MODEL` for
+label photos and `OPENAI_RECIPE_MODEL` for natural-language recipes. The implementation follows the
 [Responses API reference](https://developers.openai.com/api/reference/resources/responses/methods/create)
 and the [image input guide](https://developers.openai.com/api/docs/guides/images-vision).
 
 ## Tests and quality checks
 
-The test suite covers calculations, image resizing, AI JSON validation, public catalog
-conversion, database caching, user isolation, daily totals, and undo behavior without making
+The test suite covers calculations, image resizing, AI JSON validation, recipe parsing, quotas and
+caching, public catalog conversion, user isolation, daily totals, and undo behavior without making
 real Telegram or OpenAI requests.
 
 ```bash
@@ -293,6 +321,8 @@ real Telegram or OpenAI requests.
 - Coverage of Korean products in Open Food Facts is inconsistent.
 - General-food search requires an approved public-data API key in `MFDS_API_KEY`.
 - Piece and serving shortcuts are offered only when the official data provides conversion evidence.
+- Recipe totals add the entered amounts from the selected food records. They do not automatically
+  account for discarded oil or broth, cooking loss, or moisture changes; review every match.
 - AI OCR can be wrong and is not appropriate for medical or therapeutic nutrition management.
 - Korean/Japanese detection is advisory and must be reviewed before saving.
 - Values marked `推定値`, `目安`, or as estimates on Korean labels generate a warning but are not

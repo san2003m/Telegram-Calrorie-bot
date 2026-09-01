@@ -89,3 +89,28 @@ class ProductCandidate(BaseModel):
     sodium_derived: bool = False
     salt_equivalent_derived: bool = False
     estimated_values: bool = False
+
+
+class RecipeIngredientInput(StrictModel):
+    raw_text: str = Field(default="", max_length=160)
+    name: str = Field(min_length=1, max_length=80)
+    amount: Decimal | None = Field(default=None, gt=0, le=1_000_000)
+    unit: Literal["g", "ml", "piece", "tbsp", "tsp", "cup", "unknown"]
+    preparation: Literal["raw", "cooked", "unknown"] = "unknown"
+    note: str | None = Field(default=None, max_length=160)
+
+    @field_validator("name")
+    @classmethod
+    def clean_ingredient_name(cls, value: str) -> str:
+        return " ".join(value.split()).strip(" ,·-|:")
+
+
+class RecipeExtraction(StrictModel):
+    recipe_name: str = Field(min_length=1, max_length=80)
+    servings: Decimal = Field(default=Decimal("1"), gt=0, le=100)
+    ingredients: list[RecipeIngredientInput] = Field(min_length=1, max_length=50)
+
+    @field_validator("recipe_name")
+    @classmethod
+    def clean_recipe_name(cls, value: str) -> str:
+        return " ".join(value.split()).strip(" ,·-|:")

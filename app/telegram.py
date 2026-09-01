@@ -39,23 +39,41 @@ from app.portion import (
     parse_portion,
     portion_multiplier,
 )
+from app.recipe import (
+    PARSER_VERSION,
+    RecipeDraft,
+    RecipeError,
+    ResolvedRecipeIngredient,
+    display_recipe_amount,
+    ingredient_multiplier,
+    ingredient_totals,
+    parse_structured_recipe,
+    recipe_input_hash,
+    sum_recipe_totals,
+)
+from app.recipe_ai import RecipeAIParser
 from app.repository import (
     add_intake,
     create_product_version,
     ensure_user,
     find_product_by_barcode,
+    finish_ai_usage,
     get_active_job,
     get_daily_summary,
     get_last_portion,
     get_or_create_catalog_product,
     get_product_version,
+    get_recipe_parse_cache,
     recent_logs,
+    reserve_recipe_ai_usage,
+    save_recipe_parse_cache,
     search_catalog_products,
+    search_recipe_products,
     set_goals,
     start_job,
     undo_last_intake,
 )
-from app.schemas import NutritionRecognition, ProductCandidate
+from app.schemas import NutritionRecognition, ProductCandidate, RecipeExtraction
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +85,16 @@ class BotContext:
     catalog: OpenFoodFactsCatalog
     food_catalog: MfdsFoodCatalog | None
     recognizer: NutritionRecognizer | None
+    recipe_parser: RecipeAIParser | None = None
     started_at: float = field(default_factory=monotonic)
+
+
+@dataclass(frozen=True)
+class PreparedRecipeExtraction:
+    extraction: RecipeExtraction
+    input_hash: str
+    used_ai: bool
+    from_cache: bool
 
 
 def _allowed(user_id: int, settings: Settings) -> bool:
@@ -133,9 +160,14 @@ def _product_text(version) -> str:
     if salt_text:
         lines.append(salt_text)
     if getattr(version, "estimated_values", False):
-        lines.append("참고: 포장지에서 추정치 또는 참고값으로 표시된 영양정보")
+        if version.source == "recipe":
+            lines.append("참고: 재료 DB 매칭과 조리 전 입력량을 합산한 추정 영양정보")
+        else:
+            lines.append("참고: 포장지에서 추정치 또는 참고값으로 표시된 영양정보")
     if version.source == MFDS_SOURCE:
         lines.append("출처: 식품의약품안전처 식품영양성분DB")
+    elif version.source == "recipe":
+        lines.append("출처: 사용자 레시피 · 재료 영양값은 저장된 식품 DB 기준")
     package_details = []
     if version.package_amount is not None and version.package_unit:
         package_details.append(f"총 {_fmt(version.package_amount)} {version.package_unit}")
@@ -410,9 +442,371 @@ async def _offer_version(
     )
 
 
+async def _prepare_recipe_extraction(
+    context: BotContext,
+    *,
+    user_id: int,
+    name_hint: str | None,
+    raw_text: str,
+    last_ai_request: dict[int, float],
+) -> PreparedRecipeExtraction:
+    if len(raw_text) > context.settings.recipe_ai_max_input_chars:
+        raise RecipeError(
+            f"레시피 입력은 최대 {context.settings.recipe_ai_max_input_chars:,}자입니다."
+        )
+    input_hash = recipe_input_hash(name_hint, raw_text)
+    async with context.sessions() as session:
+        await ensure_user(session, user_id, context.settings.app_timezone)
+        cached = await get_recipe_parse_cache(
+            session,
+            user_id=user_id,
+            input_hash=input_hash,
+            parser_version=PARSER_VERSION,
+        )
+        await session.commit()
+    if cached is not None:
+        extraction = RecipeExtraction.model_validate(cached.result_json)
+        if len(extraction.ingredients) > context.settings.recipe_max_ingredients:
+            raise RecipeError("저장된 레시피 분석 결과의 재료 수가 현재 제한을 초과합니다.")
+        return PreparedRecipeExtraction(
+            extraction=extraction,
+            input_hash=input_hash,
+            used_ai=cached.used_ai,
+            from_cache=True,
+        )
+
+    extraction = parse_structured_recipe(
+        raw_text,
+        name_hint=name_hint,
+        max_ingredients=context.settings.recipe_max_ingredients,
+    )
+    if extraction is not None:
+        async with context.sessions() as session:
+            await save_recipe_parse_cache(
+                session,
+                user_id=user_id,
+                input_hash=input_hash,
+                parser_version=PARSER_VERSION,
+                result_json=extraction.model_dump(mode="json"),
+                used_ai=False,
+            )
+            await session.commit()
+        return PreparedRecipeExtraction(
+            extraction=extraction,
+            input_hash=input_hash,
+            used_ai=False,
+            from_cache=False,
+        )
+
+    if context.recipe_parser is None:
+        raise RecipeError(
+            "자연어 레시피를 분석하려면 OPENAI_API_KEY가 필요합니다.\n"
+            "AI 없이 사용하려면 재료를 ‘밥 300g’처럼 한 줄씩 입력해 주세요."
+        )
+    elapsed = monotonic() - last_ai_request.get(user_id, -10_000)
+    cooldown = context.settings.recipe_ai_cooldown_seconds
+    if elapsed < cooldown:
+        raise RecipeError(
+            f"AI 레시피 분석은 {cooldown - elapsed:.0f}초 뒤 다시 시도할 수 있습니다."
+        )
+
+    async with context.sessions() as session:
+        usage, limit_error = await reserve_recipe_ai_usage(
+            session,
+            user_id=user_id,
+            input_hash=input_hash,
+            timezone_name=context.settings.app_timezone,
+            daily_limit=context.settings.recipe_ai_daily_limit,
+            monthly_limit=context.settings.recipe_ai_monthly_limit,
+        )
+        await session.commit()
+    if usage is None:
+        raise RecipeError(limit_error or "AI 레시피 분석 한도에 도달했습니다.")
+
+    last_ai_request[user_id] = monotonic()
+    try:
+        result = await context.recipe_parser.parse(
+            raw_text=raw_text,
+            name_hint=name_hint,
+            user_id=user_id,
+        )
+    except Exception as exc:
+        logger.exception("OpenAI recipe parsing failed")
+        async with context.sessions() as session:
+            await finish_ai_usage(
+                session,
+                usage.id,
+                status="failed",
+                error=type(exc).__name__,
+            )
+            await session.commit()
+        raise RecipeError(
+            "AI 레시피 분석에 실패했습니다. 잠시 후 다시 시도하거나 재료를 한 줄씩 입력해 주세요."
+        ) from exc
+
+    async with context.sessions() as session:
+        await finish_ai_usage(
+            session,
+            usage.id,
+            status="completed",
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            total_tokens=result.total_tokens,
+        )
+        await save_recipe_parse_cache(
+            session,
+            user_id=user_id,
+            input_hash=input_hash,
+            parser_version=PARSER_VERSION,
+            result_json=result.extraction.model_dump(mode="json"),
+            used_ai=True,
+        )
+        await session.commit()
+    return PreparedRecipeExtraction(
+        extraction=result.extraction,
+        input_hash=input_hash,
+        used_ai=True,
+        from_cache=False,
+    )
+
+
+async def _resolve_recipe(
+    context: BotContext,
+    *,
+    user_id: int,
+    prepared: PreparedRecipeExtraction,
+) -> RecipeDraft:
+    resolved: list[ResolvedRecipeIngredient] = []
+    errors: list[str] = []
+    async with context.sessions() as session:
+        await ensure_user(session, user_id, context.settings.app_timezone)
+        for ingredient in prepared.extraction.ingredients:
+            if ingredient.amount is None or ingredient.unit == "unknown":
+                errors.append(f"{ingredient.name}: 양 또는 단위가 없습니다.")
+                continue
+
+            cached = await search_recipe_products(
+                session,
+                owner_id=user_id,
+                terms=search_terms(ingredient.name),
+            )
+            ranked = _rank_food_versions(ingredient.name, cached)
+            version = next(
+                (
+                    item
+                    for item in ranked
+                    if food_match_score(ingredient.name, item.product.name) >= 900
+                ),
+                None,
+            )
+            catalog_error: str | None = None
+            if version is None and context.food_catalog is not None:
+                try:
+                    candidates = await context.food_catalog.search(ingredient.name, limit=5)
+                except MfdsCatalogError as exc:
+                    candidates = []
+                    catalog_error = str(exc)
+                if candidates:
+                    versions = [
+                        await get_or_create_catalog_product(session, candidate)
+                        for candidate in candidates
+                    ]
+                    version = _rank_food_versions(ingredient.name, versions)[0]
+            if version is None and ranked:
+                version = ranked[0]
+            if version is None:
+                detail = f" ({catalog_error})" if catalog_error else ""
+                errors.append(f"{ingredient.name}: 식품 DB에서 찾지 못했습니다.{detail}")
+                continue
+
+            try:
+                multiplier, _ = ingredient_multiplier(version, ingredient)
+            except RecipeError as exc:
+                errors.append(str(exc))
+                continue
+            totals = ingredient_totals(version, multiplier)
+            resolved.append(
+                ResolvedRecipeIngredient(
+                    input_name=ingredient.name,
+                    matched_name=version.product.name,
+                    amount=ingredient.amount,
+                    unit=ingredient.unit,
+                    multiplier=multiplier,
+                    version_id=version.id,
+                    source=version.source,
+                    totals=totals,
+                )
+            )
+        await session.commit()
+
+    if errors:
+        details = "\n".join(f"· {error}" for error in errors[:10])
+        if len(errors) > 10:
+            details += f"\n· 그 외 {len(errors) - 10}개"
+        raise RecipeError(
+            "다음 재료는 계산하지 못했습니다. 이름을 더 간단히 쓰거나 g/ml로 바꿔 "
+            f"다시 입력해 주세요.\n{details}"
+        )
+    total = sum_recipe_totals(resolved)
+    return RecipeDraft(
+        draft_id=uuid4().hex[:12],
+        user_id=user_id,
+        input_hash=prepared.input_hash,
+        name=prepared.extraction.recipe_name,
+        servings=prepared.extraction.servings,
+        used_ai=prepared.used_ai,
+        ingredients=tuple(resolved),
+        total=total,
+    )
+
+
+def _recipe_draft_text(draft: RecipeDraft, *, from_cache: bool) -> str:
+    if from_cache:
+        analysis = "저장된 분석 재사용 · OpenAI 호출 없음"
+    elif draft.used_ai:
+        analysis = "AI가 재료 문장만 구조화 · 영양 계산은 Python"
+    else:
+        analysis = "정형 입력 분석 · OpenAI 호출 없음"
+    lines = [f"🍳 {draft.name}", analysis, "", "재료 매칭"]
+    for item in draft.ingredients:
+        amount = display_recipe_amount(item.amount, item.unit)
+        lines.append(
+            f"· {item.input_name} {amount} → {item.matched_name} · {_fmt(item.totals.kcal)} kcal"
+        )
+    per_serving = draft.per_serving
+    lines.extend(
+        [
+            "",
+            f"전체 {_fmt(draft.total.kcal)} kcal · {_fmt(draft.servings)}인분",
+            f"1인분 {_fmt(per_serving.kcal)} kcal",
+            f"탄 {_fmt(per_serving.carbs_g)} g · 단 {_fmt(per_serving.protein_g)} g · "
+            f"지 {_fmt(per_serving.fat_g)} g",
+            "",
+            "재료와 식품 DB 매칭이 맞는지 확인해 주세요.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _recipe_confirmation_keyboard(draft_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="레시피 저장",
+                    callback_data=f"recipe_save:{draft_id}",
+                ),
+                InlineKeyboardButton(
+                    text="취소",
+                    callback_data=f"recipe_cancel:{draft_id}",
+                ),
+            ]
+        ]
+    )
+
+
+def _recipe_candidate(draft: RecipeDraft) -> ProductCandidate:
+    per_serving = draft.per_serving
+    ingredients = [
+        {
+            "input_name": item.input_name,
+            "matched_name": item.matched_name,
+            "amount": str(item.amount),
+            "unit": item.unit,
+            "multiplier": str(item.multiplier),
+            "product_version_id": item.version_id,
+            "source": item.source,
+            "kcal": str(item.totals.kcal),
+            "carbs_g": str(item.totals.carbs_g),
+            "protein_g": str(item.totals.protein_g),
+            "fat_g": str(item.totals.fat_g),
+        }
+        for item in draft.ingredients
+    ]
+    return ProductCandidate(
+        external_source="recipe",
+        external_id=f"{draft.user_id}:{draft.input_hash[:56]}",
+        name=draft.name,
+        basis_amount=Decimal("1"),
+        basis_unit="serving",
+        servings_per_package=draft.servings,
+        kcal=per_serving.kcal,
+        carbs_g=per_serving.carbs_g,
+        protein_g=per_serving.protein_g,
+        fat_g=per_serving.fat_g,
+        source="recipe",
+        verified=True,
+        estimated_values=True,
+        basis_text=f"1인분 (전체 {_fmt(draft.servings)}인분)",
+        raw_data={
+            "recipe": {
+                "input_hash": draft.input_hash,
+                "parser_version": PARSER_VERSION,
+                "used_ai": draft.used_ai,
+                "servings": str(draft.servings),
+                "ingredients": ingredients,
+                "total": {
+                    "kcal": str(draft.total.kcal),
+                    "carbs_g": str(draft.total.carbs_g),
+                    "protein_g": str(draft.total.protein_g),
+                    "fat_g": str(draft.total.fat_g),
+                },
+            }
+        },
+    )
+
+
 def create_router(context: BotContext) -> Router:
     router = Router(name="calorie-bot")
     pending_portions: dict[int, int] = {}
+    pending_recipe_names: dict[int, str | None] = {}
+    recipe_drafts: dict[str, RecipeDraft] = {}
+    recipe_ai_last_request: dict[int, float] = {}
+    recipe_locks: dict[int, asyncio.Lock] = {}
+
+    async def process_recipe_message(
+        message: Message,
+        *,
+        name_hint: str | None,
+        raw_text: str,
+    ) -> None:
+        user_id = message.from_user.id if message.from_user else 0
+        await message.answer("재료를 분석하고 식품 DB에서 영양정보를 찾는 중입니다.")
+        lock = recipe_locks.setdefault(user_id, asyncio.Lock())
+        if lock.locked():
+            await message.answer("이미 이 레시피를 처리 중입니다. 잠시만 기다려 주세요.")
+            return
+        try:
+            async with lock:
+                prepared = await _prepare_recipe_extraction(
+                    context,
+                    user_id=user_id,
+                    name_hint=name_hint,
+                    raw_text=raw_text,
+                    last_ai_request=recipe_ai_last_request,
+                )
+                draft = await _resolve_recipe(
+                    context,
+                    user_id=user_id,
+                    prepared=prepared,
+                )
+        except RecipeError as exc:
+            await message.answer(str(exc))
+            return
+        except Exception:
+            logger.exception("Recipe processing failed")
+            await message.answer("레시피를 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.")
+            return
+
+        for draft_id, old_draft in list(recipe_drafts.items()):
+            if old_draft.user_id == user_id:
+                recipe_drafts.pop(draft_id, None)
+        recipe_drafts[draft.draft_id] = draft
+        pending_recipe_names.pop(user_id, None)
+        await message.answer(
+            _recipe_draft_text(draft, from_cache=prepared.from_cache),
+            reply_markup=_recipe_confirmation_keyboard(draft.draft_id),
+        )
 
     @router.message(Command("whoami"))
     async def whoami(message: Message) -> None:
@@ -430,7 +824,8 @@ def create_router(context: BotContext) -> Router:
             "칼로리 기록 봇이 준비됐습니다.\n\n"
             "1) 바코드를 크게 찍어 보내세요.\n"
             "2) 처음 보는 제품이면 안내에 따라 앞면과 영양정보 표를 보내세요.\n"
-            "3) 숫자를 확인한 뒤 기록 버튼을 누르세요.\n\n"
+            "3) 일반 음식은 /food, 요리는 /recipe 로 기록할 수 있습니다.\n"
+            "4) 숫자를 확인한 뒤 기록 버튼을 누르세요.\n\n"
             "명령어는 /help 에서 볼 수 있습니다."
         )
 
@@ -445,9 +840,10 @@ def create_router(context: BotContext) -> Router:
             "/undo — 마지막 기록 취소\n"
             "/goal 2000 250 130 60 — kcal/탄/단/지 목표\n"
             "/food 삶은 달걀 — 일반 음식 검색\n"
+            "/recipe 김치볶음밥 — 재료로 레시피 계산\n"
             "/barcode 8801234567890 — 바코드 숫자로 시작\n"
             "/manual 이름 | kcal | 탄수 | 단백질 | 지방 — 직접 기록\n"
-            "/cancel — 진행 중인 사진 인식 취소\n"
+            "/cancel — 진행 중인 입력 취소\n"
             "/whoami — 내 Telegram ID 확인\n\n"
             "섭취량 입력 예: 45g, 250ml, 2개/2個, 1本, 0.5봉/0.5袋, "
             "70%, 절반/半分"
@@ -558,10 +954,39 @@ def create_router(context: BotContext) -> Router:
             await session.commit()
         await message.answer("일일 목표를 저장했습니다.")
 
+    @router.message(Command("recipe"))
+    async def recipe_command(message: Message) -> None:
+        if not await _guard(message, context.settings):
+            return
+        user_id = message.from_user.id
+        text_value = message.text or ""
+        command_token = text_value.split(maxsplit=1)[0] if text_value.split() else "/recipe"
+        body = text_value[len(command_token) :].strip()
+        pending_portions.pop(user_id, None)
+        pending_recipe_names.pop(user_id, None)
+        for draft_id, draft in list(recipe_drafts.items()):
+            if draft.user_id == user_id:
+                recipe_drafts.pop(draft_id, None)
+
+        if "\n" in body:
+            await process_recipe_message(message, name_hint=None, raw_text=body)
+            return
+        pending_recipe_names[user_id] = body[:80] or None
+        name_line = "" if body else "첫 줄에 레시피 이름을 적고, "
+        await message.answer(
+            f"{name_line}재료를 한 줄씩 보내주세요. 마지막에 총 인분을 적을 수 있습니다.\n\n"
+            "예:\n"
+            + ("" if body else "김치볶음밥\n")
+            + "밥 420g\n김치 160g\n돼지고기 120g\n달걀 2개\n총 2인분\n\n"
+            "자연어 문장도 가능하지만, 위 형식은 OpenAI를 호출하지 않습니다.\n"
+            "취소하려면 /cancel"
+        )
+
     @router.message(Command("manual"))
     async def manual(message: Message) -> None:
         if not await _guard(message, context.settings):
             return
+        pending_recipe_names.pop(message.from_user.id, None)
         body = (message.text or "").partition(" ")[2]
         parts = [part.strip() for part in body.split("|")]
         if len(parts) != 5 or not parts[0]:
@@ -611,6 +1036,7 @@ def create_router(context: BotContext) -> Router:
             return
 
         pending_portions.pop(message.from_user.id, None)
+        pending_recipe_names.pop(message.from_user.id, None)
         async with context.sessions() as session:
             await ensure_user(session, message.from_user.id, context.settings.app_timezone)
             cached = await search_catalog_products(
@@ -677,6 +1103,7 @@ def create_router(context: BotContext) -> Router:
     async def barcode_command(message: Message) -> None:
         if not await _guard(message, context.settings):
             return
+        pending_recipe_names.pop(message.from_user.id, None)
         raw = (message.text or "").partition(" ")[2]
         try:
             barcode = normalize_barcode(raw)
@@ -710,6 +1137,13 @@ def create_router(context: BotContext) -> Router:
             return
         paths: list[str | None] = []
         had_pending_portion = pending_portions.pop(message.from_user.id, None) is not None
+        had_pending_recipe = message.from_user.id in pending_recipe_names
+        pending_recipe_names.pop(message.from_user.id, None)
+        removed_draft = False
+        for draft_id, draft in list(recipe_drafts.items()):
+            if draft.user_id == message.from_user.id:
+                recipe_drafts.pop(draft_id, None)
+                removed_draft = True
         async with context.sessions() as session:
             job = await get_active_job(session, message.from_user.id)
             if job:
@@ -720,7 +1154,7 @@ def create_router(context: BotContext) -> Router:
             remove_private_image(path)
         await message.answer(
             "진행 중인 입력을 취소했습니다."
-            if paths or had_pending_portion
+            if paths or had_pending_portion or had_pending_recipe or removed_draft
             else "진행 중인 입력이 없습니다."
         )
 
@@ -730,6 +1164,7 @@ def create_router(context: BotContext) -> Router:
             return
         raw = await _download_photo(bot, message)
         pending_portions.pop(message.from_user.id, None)
+        pending_recipe_names.pop(message.from_user.id, None)
         async with context.sessions() as session:
             await ensure_user(session, message.from_user.id, context.settings.app_timezone)
             job = await get_active_job(session, message.from_user.id)
@@ -1045,13 +1480,68 @@ def create_router(context: BotContext) -> Router:
         if callback.message:
             await callback.message.answer("인식 결과를 저장하지 않았습니다.")
 
+    @router.callback_query(F.data.startswith("recipe_save:"))
+    async def save_recipe(callback: CallbackQuery) -> None:
+        if not callback.from_user or not _allowed(callback.from_user.id, context.settings):
+            await callback.answer("사용 권한이 없습니다.", show_alert=True)
+            return
+        draft_id = (callback.data or "").partition(":")[2]
+        draft = recipe_drafts.get(draft_id)
+        if draft is None or draft.user_id != callback.from_user.id:
+            await callback.answer("만료되었거나 처리된 레시피입니다.", show_alert=True)
+            return
+        async with context.sessions() as session:
+            await ensure_user(session, callback.from_user.id, context.settings.app_timezone)
+            version = await create_product_version(
+                session,
+                _recipe_candidate(draft),
+                owner_id=callback.from_user.id,
+            )
+            await session.commit()
+        recipe_drafts.pop(draft_id, None)
+        await callback.answer("레시피를 저장했습니다.")
+        await _clear_inline_keyboard(callback)
+        if callback.message:
+            await callback.message.answer("1인분 영양정보로 저장했습니다. 먹은 양을 선택해 주세요.")
+            await _offer_version(
+                context,
+                callback.message,
+                version,
+                user_id=callback.from_user.id,
+            )
+
+    @router.callback_query(F.data.startswith("recipe_cancel:"))
+    async def cancel_recipe(callback: CallbackQuery) -> None:
+        if not callback.from_user or not _allowed(callback.from_user.id, context.settings):
+            await callback.answer("사용 권한이 없습니다.", show_alert=True)
+            return
+        draft_id = (callback.data or "").partition(":")[2]
+        draft = recipe_drafts.get(draft_id)
+        if draft is None or draft.user_id != callback.from_user.id:
+            await callback.answer("만료되었거나 처리된 레시피입니다.", show_alert=True)
+            return
+        recipe_drafts.pop(draft_id, None)
+        await callback.answer("취소했습니다.")
+        await _clear_inline_keyboard(callback)
+        if callback.message:
+            await callback.message.answer("레시피를 저장하지 않았습니다.")
+
     @router.message(F.text)
     async def custom_portion(message: Message) -> None:
-        if not message.from_user or message.from_user.id not in pending_portions:
+        if not message.from_user:
             return
         if (message.text or "").startswith("/"):
             return
         if not await _guard(message, context.settings):
+            return
+        if message.from_user.id in pending_recipe_names:
+            await process_recipe_message(
+                message,
+                name_hint=pending_recipe_names[message.from_user.id],
+                raw_text=message.text or "",
+            )
+            return
+        if message.from_user.id not in pending_portions:
             return
         try:
             portion = parse_portion(message.text or "")

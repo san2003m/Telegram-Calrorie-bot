@@ -201,7 +201,7 @@
     const $ = (id) => document.getElementById(id);
     const formatNumber = (value, digits = 1) => new Intl.NumberFormat("ko-KR", { maximumFractionDigits: digits }).format(value || 0);
     const pct = (value, goal) => goal ? Math.min((value / goal) * 100, 100) : 0;
-    const sourceLabels = { open_food_facts: "Open Food Facts", mfds_food_db: "식약처 영양 DB", ai_label: "AI 인식", manual: "직접 입력", user_correction: "사용자 수정", test: "테스트" };
+    const sourceLabels = { open_food_facts: "Open Food Facts", mfds_food_db: "식약처 영양 DB", ai_label: "AI 인식", manual: "직접 입력", recipe: "사용자 레시피", user_correction: "사용자 수정", test: "테스트" };
 
     function element(tag, className, text) {
       const node = document.createElement(tag);

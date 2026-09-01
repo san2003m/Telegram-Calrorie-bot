@@ -1,13 +1,16 @@
 from decimal import Decimal
 from types import SimpleNamespace
 
+from app.nutrition import MacroTotals
 from app.portion import ParsedPortion
+from app.recipe import RecipeDraft, ResolvedRecipeIngredient
 from app.schemas import Nutrients, NutritionBasis, NutritionRecognition
 from app.telegram import (
     _can_correct_basis_unit,
     _candidate_from_recognition,
     _candidate_with_basis_unit,
     _format_uptime,
+    _recipe_candidate,
     _recognition_result_text,
     _stored_quick_portions,
 )
@@ -135,3 +138,41 @@ def test_mfds_piece_shortcuts_use_metric_reference() -> None:
         ("1개(참고 50g)", ParsedPortion(Decimal("1"), "piece")),
         ("2개(참고 100g)", ParsedPortion(Decimal("2"), "piece")),
     ]
+
+
+def test_recipe_candidate_is_saved_per_serving_with_ingredient_snapshot() -> None:
+    ingredient_totals = MacroTotals(
+        kcal=Decimal("400"),
+        carbs_g=Decimal("60"),
+        protein_g=Decimal("20"),
+        fat_g=Decimal("10"),
+    )
+    draft = RecipeDraft(
+        draft_id="draft",
+        user_id=1234,
+        input_hash="a" * 64,
+        name="달걀밥",
+        servings=Decimal("2"),
+        used_ai=False,
+        ingredients=(
+            ResolvedRecipeIngredient(
+                input_name="달걀",
+                matched_name="달걀, 삶은것",
+                amount=Decimal("2"),
+                unit="piece",
+                multiplier=Decimal("1"),
+                version_id=10,
+                source="mfds_food_db",
+                totals=ingredient_totals,
+            ),
+        ),
+        total=ingredient_totals,
+    )
+
+    result = _recipe_candidate(draft)
+
+    assert result.basis_unit == "serving"
+    assert result.servings_per_package == Decimal("2")
+    assert result.kcal == Decimal("200.0")
+    assert result.external_id == f"1234:{'a' * 56}"
+    assert result.raw_data["recipe"]["ingredients"][0]["product_version_id"] == 10

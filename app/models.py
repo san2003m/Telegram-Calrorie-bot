@@ -147,3 +147,41 @@ class ProcessedUpdate(Base):
 
     update_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
     processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class RecipeParseCache(Base):
+    __tablename__ = "recipe_parse_cache"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_telegram_id: Mapped[int] = mapped_column(ForeignKey("users.telegram_id"), index=True)
+    input_hash: Mapped[str] = mapped_column(String(64))
+    parser_version: Mapped[str] = mapped_column(String(32))
+    result_json: Mapped[dict] = mapped_column(JSON)
+    used_ai: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_telegram_id",
+            "input_hash",
+            "parser_version",
+            name="uq_recipe_parse_cache_user_input_version",
+        ),
+    )
+
+
+class AIUsage(Base):
+    __tablename__ = "ai_usage"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_telegram_id: Mapped[int] = mapped_column(ForeignKey("users.telegram_id"), index=True)
+    feature: Mapped[str] = mapped_column(String(32), index=True)
+    input_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(24), default="started")
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, index=True
+    )
