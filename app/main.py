@@ -14,6 +14,7 @@ from app.db import Database
 from app.health import create_health_app
 from app.image_tools import cleanup_old_uploads
 from app.logging_config import configure_logging
+from app.menu_ai import MenuNutritionSearcher
 from app.mfds_catalog import MfdsFoodCatalog
 from app.recipe_ai import RecipeAIParser
 from app.telegram import BotContext, create_router
@@ -58,6 +59,15 @@ async def run() -> None:
             if settings.openai_api_key
             else None
         ),
+        menu_searcher=(
+            MenuNutritionSearcher(
+                settings.openai_api_key,
+                settings.openai_menu_model,
+                max_output_tokens=settings.menu_ai_max_output_tokens,
+            )
+            if settings.openai_api_key
+            else None
+        ),
     )
 
     bot = Bot(token=settings.telegram_bot_token)
@@ -71,6 +81,7 @@ async def run() -> None:
             BotCommand(command="undo", description="마지막 기록 취소"),
             BotCommand(command="goal", description="일일 목표 설정"),
             BotCommand(command="food", description="일반 음식 검색"),
+            BotCommand(command="menu", description="외식 메뉴 공식 영양정보 검색"),
             BotCommand(command="recipe", description="재료로 레시피 계산"),
             BotCommand(command="manual", description="직접 기록"),
             BotCommand(command="cancel", description="진행 중인 입력 취소"),

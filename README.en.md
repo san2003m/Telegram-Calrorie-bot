@@ -12,6 +12,7 @@ recorded and cached after the user reviews it.
 - Scan a barcode from a photo or enter its digits manually
 - Look up products in the local database, then Open Food Facts, then from photos with AI
 - Search general foods through MFDS with commands such as `/food 삶은 달걀` and cache results
+- Search official restaurant-menu nutrition with `/menu brand menu size`
 - Calculate recipe totals and per-serving calories and macros from ingredients with `/recipe`
 - Track calories, carbohydrates, protein, and fat
 - Detect Korean and Japanese nutrition-label formats and preserve the original basis text
@@ -44,6 +45,10 @@ Telegram /food name
   └─ Local cache → MFDS Food Nutrition Database
       └─ Select food → Reference serving/piece or custom grams → Save entry
 
+Telegram /menu brand menu size
+  └─ Saved official menu → otherwise one limited OpenAI web search
+      └─ Verify official source and required values → User review → Cache → Save entry
+
 Telegram /recipe name
   └─ Line parser → OpenAI ingredient extraction only when needed
       └─ Local/MFDS matching → User review → Save as one-serving product → Save entry
@@ -63,8 +68,9 @@ users.
 5. VS Code and Python 3.11 or later for local development
 
 The bot can start, accept manual entries, query the database, and parse line-based recipes without
-an OpenAI key. Only unknown-product photo recognition and natural-language recipe extraction are
-disabled. Without `MFDS_API_KEY`, new `/food` and recipe-ingredient searches are disabled, while
+an OpenAI key. Only unknown-product photo recognition, natural-language recipe extraction, and new
+`/menu` searches are disabled. Without `MFDS_API_KEY`, new `/food` and recipe-ingredient searches
+are disabled, while
 previously cached foods remain reusable.
 
 ## Quick local setup
@@ -218,6 +224,7 @@ docker compose cp bot:/data/logs ./calorie-logs
 | `/undo` | Mark the latest entry as undone without deleting it |
 | `/goal` | `/goal 2000 250 130 60` (kcal, carbohydrates, protein, fat) |
 | `/food` | Search general foods, for example `/food 삶은 달걀` |
+| `/menu` | Search official brand nutrition, for example `/menu Starbucks Cafe Latte Tall` |
 | `/recipe` | Send `/recipe 김치볶음밥`, then ingredients and total servings |
 | `/barcode` | `/barcode 8801234567890` |
 | `/manual` | `/manual Chicken breast \| 165 \| 0 \| 31 \| 3.6` |
@@ -260,6 +267,13 @@ one-serving product so existing intake buttons, daily totals, recent entries, an
 reuse it. Tablespoons, teaspoons, and cups are converted to volume only; the bot does not invent a
 volume-to-weight density when the selected food is measured in grams.
 
+Use `/menu brand menu size` for restaurant and cafe items. Each request allows at most one OpenAI
+web-search call. A result is shown only when one first-party brand page or official PDF contains the
+exact menu and size, serving basis, calories, carbohydrates, protein, and fat. Blogs, delivery apps,
+and crowd-sourced nutrition databases are rejected, and missing values are never estimated. The
+user reviews the official URL and numbers before saving. Saved results are reused by query hash;
+unsuccessful searches are also cached for seven days by default to prevent repeated credit use.
+
 The Japanese `食塩相当量` value is not sodium itself. The bot preserves the value printed on the
 package, derives sodium using `sodium (mg) = salt equivalent (g) × 1000 ÷ 2.54`, and explicitly
 marks the result as derived. If a Korean label contains only sodium, the inverse conversion is
@@ -295,10 +309,18 @@ API.
   concurrent request
 - Identical recipe input reuses a per-user hash cache, and actual input/output token usage is stored
 - The recipe model receives no web, file, code-execution, or other tools
+- Menu lookup uses a low-cost model, low search context, one web-search call, and 900 output tokens
+- Menu limits default to 5 calls per day and 50 per month per user, plus 20 per day and 200 per month
+  for the whole service
+- Each user also has a 15-second cooldown and one concurrent call
+- A result can be saved only when its official URL appears in the actual web-search sources and all
+  required nutrition fields are present
+- Successful and unsuccessful searches are cached for seven days, with token usage tracked
 
 API pricing changes by model and over time. Check the
 [OpenAI pricing page](https://openai.com/api/pricing/) for current rates. Select `OPENAI_MODEL` for
-label photos and `OPENAI_RECIPE_MODEL` for natural-language recipes. The implementation follows the
+label photos, `OPENAI_RECIPE_MODEL` for natural-language recipes, and `OPENAI_MENU_MODEL` for menu
+search. The implementation follows the
 [Responses API reference](https://developers.openai.com/api/reference/resources/responses/methods/create)
 and the [image input guide](https://developers.openai.com/api/docs/guides/images-vision).
 

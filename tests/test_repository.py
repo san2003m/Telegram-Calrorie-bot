@@ -13,10 +13,13 @@ from app.repository import (
     find_product_by_external_id,
     get_daily_summary,
     get_last_portion,
+    get_menu_search_cache,
     get_or_create_catalog_product,
     get_product_version,
     get_recipe_parse_cache,
+    reserve_ai_usage,
     reserve_recipe_ai_usage,
+    save_menu_search_cache,
     save_recipe_parse_cache,
     search_catalog_products,
     search_recipe_products,
@@ -244,6 +247,122 @@ async def test_recipe_ai_quota_counts_reserved_attempts(sessions) -> None:
     assert first_error is None
     assert second is None
     assert "오늘" in (second_error or "")
+
+
+async def test_menu_search_cache_is_reused_and_versioned(sessions) -> None:
+    payload = {
+        "found": False,
+        "official_source": False,
+        "brand": None,
+        "menu_name": None,
+        "basis_text": None,
+        "basis_amount": None,
+        "basis_unit": None,
+        "kcal": None,
+        "carbs_g": None,
+        "protein_g": None,
+        "fat_g": None,
+        "source_url": None,
+        "source_title": None,
+        "evidence_text": [],
+        "confidence": "0",
+    }
+    async with sessions() as session:
+        first = await save_menu_search_cache(
+            session,
+            input_hash="m" * 64,
+            search_version="menu-web-v1",
+            query="브랜드 메뉴",
+            result_json=payload,
+            searched_urls=[],
+        )
+        second = await save_menu_search_cache(
+            session,
+            input_hash="m" * 64,
+            search_version="menu-web-v1",
+            query="브랜드 메뉴",
+            result_json=payload,
+            searched_urls=[],
+        )
+        await session.commit()
+        cached = await get_menu_search_cache(
+            session,
+            input_hash="m" * 64,
+            search_version="menu-web-v1",
+            max_age_days=7,
+        )
+        wrong_version = await get_menu_search_cache(
+            session,
+            input_hash="m" * 64,
+            search_version="menu-web-v2",
+            max_age_days=7,
+        )
+
+    assert first.id == second.id
+    assert cached is not None and cached.query == "브랜드 메뉴"
+    assert wrong_version is None
+
+
+async def test_ai_usage_quota_is_isolated_by_feature(sessions) -> None:
+    async with sessions() as session:
+        await ensure_user(session, 1, "Asia/Seoul")
+        menu_usage, menu_error = await reserve_ai_usage(
+            session,
+            user_id=1,
+            feature="menu_lookup",
+            input_hash="m" * 64,
+            timezone_name="Asia/Seoul",
+            daily_limit=1,
+            monthly_limit=10,
+            feature_label="AI 외식 메뉴 검색",
+        )
+        await session.commit()
+        recipe_usage, recipe_error = await reserve_recipe_ai_usage(
+            session,
+            user_id=1,
+            input_hash="r" * 64,
+            timezone_name="Asia/Seoul",
+            daily_limit=1,
+            monthly_limit=10,
+        )
+
+    assert menu_usage is not None and menu_error is None
+    assert recipe_usage is not None and recipe_error is None
+
+
+async def test_menu_ai_global_quota_limits_multiple_users(sessions) -> None:
+    async with sessions() as session:
+        await ensure_user(session, 1, "Asia/Seoul")
+        await ensure_user(session, 2, "Asia/Seoul")
+        first, first_error = await reserve_ai_usage(
+            session,
+            user_id=1,
+            feature="menu_lookup",
+            input_hash="a" * 64,
+            timezone_name="Asia/Seoul",
+            daily_limit=5,
+            monthly_limit=50,
+            feature_label="AI 외식 메뉴 검색",
+            global_daily_limit=1,
+            global_monthly_limit=10,
+        )
+        await session.commit()
+        second, second_error = await reserve_ai_usage(
+            session,
+            user_id=2,
+            feature="menu_lookup",
+            input_hash="b" * 64,
+            timezone_name="Asia/Seoul",
+            daily_limit=5,
+            monthly_limit=50,
+            feature_label="AI 외식 메뉴 검색",
+            global_daily_limit=1,
+            global_monthly_limit=10,
+        )
+
+    assert first is not None and first_error is None
+    assert second is None
+    assert "서비스 전체" in (second_error or "")
 
 
 async def test_recipe_search_can_use_private_or_public_food_but_not_recipe(sessions) -> None:

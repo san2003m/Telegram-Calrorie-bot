@@ -1,15 +1,19 @@
 from decimal import Decimal
 from types import SimpleNamespace
 
+from app.menu_ai import MenuNutritionEvidence
 from app.nutrition import MacroTotals
 from app.portion import ParsedPortion
 from app.recipe import RecipeDraft, ResolvedRecipeIngredient
 from app.schemas import Nutrients, NutritionBasis, NutritionRecognition
 from app.telegram import (
+    MenuSearchDraft,
     _can_correct_basis_unit,
     _candidate_from_recognition,
     _candidate_with_basis_unit,
     _format_uptime,
+    _menu_candidate,
+    _product_text,
     _recipe_candidate,
     _recognition_result_text,
     _stored_quick_portions,
@@ -176,3 +180,75 @@ def test_recipe_candidate_is_saved_per_serving_with_ingredient_snapshot() -> Non
     assert result.kcal == Decimal("200.0")
     assert result.external_id == f"1234:{'a' * 56}"
     assert result.raw_data["recipe"]["ingredients"][0]["product_version_id"] == 10
+
+
+def test_official_menu_candidate_keeps_verified_source_and_url() -> None:
+    evidence = MenuNutritionEvidence(
+        found=True,
+        official_source=True,
+        brand="테스트카페",
+        menu_name="카페 라떼 Tall",
+        basis_text="Tall 1잔 (355 ml)",
+        basis_amount=Decimal("1"),
+        basis_unit="serving",
+        kcal=Decimal("180"),
+        carbs_g=Decimal("18"),
+        protein_g=Decimal("9"),
+        fat_g=Decimal("8"),
+        source_url="https://brand.example/menu/latte",
+        source_title="테스트카페 공식 영양정보",
+        confidence=Decimal("0.95"),
+    )
+    draft = MenuSearchDraft(
+        draft_id="menu-draft",
+        user_id=1234,
+        query="테스트카페 카페 라떼 Tall",
+        input_hash="m" * 64,
+        evidence=evidence,
+        searched_urls=("https://brand.example/menu/latte",),
+        from_cache=False,
+    )
+
+    result = _menu_candidate(draft)
+
+    assert result.external_source == "brand_menu"
+    assert result.external_id == "m" * 64
+    assert result.servings_per_package == Decimal("1")
+    assert result.verified is True
+    assert result.estimated_values is False
+    assert result.raw_data["official_menu"]["source_url"] == evidence.source_url
+
+
+def test_official_menu_source_is_visible_in_product_text() -> None:
+    product = SimpleNamespace(name="카페 라떼 Tall", brand="테스트카페")
+    version = SimpleNamespace(
+        product=product,
+        basis_amount=Decimal("1"),
+        basis_unit="serving",
+        basis_text="Tall 1잔 (355 ml)",
+        kcal=Decimal("180"),
+        carbs_g=Decimal("18"),
+        protein_g=Decimal("9"),
+        fat_g=Decimal("8"),
+        sodium_mg=None,
+        salt_equivalent_g=None,
+        estimated_values=False,
+        source="brand_menu",
+        package_amount=None,
+        package_unit=None,
+        servings_per_package=Decimal("1"),
+        piece_count=None,
+        label_market="UNKNOWN",
+        raw_data={
+            "official_menu": {
+                "source_title": "테스트카페 공식 영양정보",
+                "source_url": "https://brand.example/menu/latte",
+            }
+        },
+    )
+
+    text = _product_text(version)
+
+    assert "출처: 테스트카페 공식 영양정보" in text
+    assert "메뉴 단위: 1회분" in text
+    assert "https://brand.example/menu/latte" in text

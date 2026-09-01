@@ -6,12 +6,14 @@ from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import Select, desc, func, or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from app.models import (
     AIUsage,
     IntakeLog,
+    MenuSearchCache,
     Product,
     ProductVersion,
     RecipeParseCache,
@@ -484,30 +486,130 @@ async def reserve_recipe_ai_usage(
     daily_limit: int,
     monthly_limit: int,
 ) -> tuple[AIUsage | None, str | None]:
+    return await reserve_ai_usage(
+        session,
+        user_id=user_id,
+        feature="recipe_parse",
+        input_hash=input_hash,
+        timezone_name=timezone_name,
+        daily_limit=daily_limit,
+        monthly_limit=monthly_limit,
+        feature_label="AI 레시피 분석",
+    )
+
+
+async def reserve_ai_usage(
+    session: AsyncSession,
+    *,
+    user_id: int,
+    feature: str,
+    input_hash: str,
+    timezone_name: str,
+    daily_limit: int,
+    monthly_limit: int,
+    feature_label: str,
+    global_daily_limit: int | None = None,
+    global_monthly_limit: int | None = None,
+) -> tuple[AIUsage | None, str | None]:
     day_start, month_start = _usage_window(timezone_name)
     base = (
         AIUsage.user_telegram_id == user_id,
-        AIUsage.feature == "recipe_parse",
+        AIUsage.feature == feature,
     )
     daily_count = await session.scalar(
         select(func.count(AIUsage.id)).where(*base, AIUsage.created_at >= day_start)
     )
     if daily_limit <= 0 or (daily_count or 0) >= daily_limit:
-        return None, "오늘의 AI 레시피 분석 한도에 도달했습니다. 내일 다시 시도해 주세요."
+        return None, f"오늘의 {feature_label} 한도에 도달했습니다. 내일 다시 시도해 주세요."
     monthly_count = await session.scalar(
         select(func.count(AIUsage.id)).where(*base, AIUsage.created_at >= month_start)
     )
     if monthly_limit <= 0 or (monthly_count or 0) >= monthly_limit:
-        return None, "이번 달의 AI 레시피 분석 한도에 도달했습니다."
+        return None, f"이번 달의 {feature_label} 한도에 도달했습니다."
+    feature_filter = (AIUsage.feature == feature,)
+    if global_daily_limit is not None:
+        global_daily_count = await session.scalar(
+            select(func.count(AIUsage.id)).where(
+                *feature_filter,
+                AIUsage.created_at >= day_start,
+            )
+        )
+        if global_daily_limit <= 0 or (global_daily_count or 0) >= global_daily_limit:
+            return None, f"오늘의 서비스 전체 {feature_label} 한도에 도달했습니다."
+    if global_monthly_limit is not None:
+        global_monthly_count = await session.scalar(
+            select(func.count(AIUsage.id)).where(
+                *feature_filter,
+                AIUsage.created_at >= month_start,
+            )
+        )
+        if global_monthly_limit <= 0 or (global_monthly_count or 0) >= global_monthly_limit:
+            return None, f"이번 달의 서비스 전체 {feature_label} 한도에 도달했습니다."
     usage = AIUsage(
         user_telegram_id=user_id,
-        feature="recipe_parse",
+        feature=feature[:32],
         input_hash=input_hash,
         status="started",
     )
     session.add(usage)
     await session.flush()
     return usage, None
+
+
+async def get_menu_search_cache(
+    session: AsyncSession,
+    *,
+    input_hash: str,
+    search_version: str,
+    max_age_days: int,
+) -> MenuSearchCache | None:
+    cutoff = datetime.now(UTC) - timedelta(days=max_age_days)
+    return await session.scalar(
+        select(MenuSearchCache).where(
+            MenuSearchCache.input_hash == input_hash,
+            MenuSearchCache.search_version == search_version,
+            MenuSearchCache.created_at >= cutoff,
+        )
+    )
+
+
+async def save_menu_search_cache(
+    session: AsyncSession,
+    *,
+    input_hash: str,
+    search_version: str,
+    query: str,
+    result_json: dict,
+    searched_urls: list[str],
+) -> MenuSearchCache:
+    cached = await session.scalar(
+        select(MenuSearchCache).where(MenuSearchCache.input_hash == input_hash)
+    )
+    if cached is None:
+        try:
+            async with session.begin_nested():
+                cached = MenuSearchCache(
+                    input_hash=input_hash,
+                    search_version=search_version,
+                    query=query[:160],
+                    result_json=result_json,
+                    searched_urls=searched_urls[:20],
+                )
+                session.add(cached)
+                await session.flush()
+        except IntegrityError:
+            cached = await session.scalar(
+                select(MenuSearchCache).where(MenuSearchCache.input_hash == input_hash)
+            )
+            if cached is None:
+                raise
+    cached.search_version = search_version
+    cached.query = query[:160]
+    cached.result_json = result_json
+    cached.searched_urls = searched_urls[:20]
+    cached.created_at = utc_now()
+    await session.flush()
+    return cached
 
 
 async def finish_ai_usage(

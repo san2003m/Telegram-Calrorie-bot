@@ -185,3 +185,17 @@ class AIUsage(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, index=True
     )
+
+
+class MenuSearchCache(Base):
+    __tablename__ = "menu_search_cache"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    input_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    search_version: Mapped[str] = mapped_column(String(32))
+    query: Mapped[str] = mapped_column(String(160))
+    result_json: Mapped[dict] = mapped_column(JSON)
+    searched_urls: Mapped[list[str]] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, index=True
+    )

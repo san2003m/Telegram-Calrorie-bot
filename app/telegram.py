@@ -22,6 +22,15 @@ from app.barcode import decode_barcodes, normalize_barcode
 from app.catalog import OpenFoodFactsCatalog
 from app.config import Settings
 from app.image_tools import preprocess_image, remove_private_image, write_private_image
+from app.menu_ai import (
+    MENU_SEARCH_VERSION,
+    MenuLookupError,
+    MenuNutritionEvidence,
+    MenuNutritionSearcher,
+    is_usable_menu_evidence,
+    menu_query_hash,
+    normalize_menu_query,
+)
 from app.mfds_catalog import (
     MFDS_SOURCE,
     MfdsCatalogError,
@@ -57,15 +66,19 @@ from app.repository import (
     create_product_version,
     ensure_user,
     find_product_by_barcode,
+    find_product_by_external_id,
     finish_ai_usage,
     get_active_job,
     get_daily_summary,
     get_last_portion,
+    get_menu_search_cache,
     get_or_create_catalog_product,
     get_product_version,
     get_recipe_parse_cache,
     recent_logs,
+    reserve_ai_usage,
     reserve_recipe_ai_usage,
+    save_menu_search_cache,
     save_recipe_parse_cache,
     search_catalog_products,
     search_recipe_products,
@@ -86,6 +99,7 @@ class BotContext:
     food_catalog: MfdsFoodCatalog | None
     recognizer: NutritionRecognizer | None
     recipe_parser: RecipeAIParser | None = None
+    menu_searcher: MenuNutritionSearcher | None = None
     started_at: float = field(default_factory=monotonic)
 
 
@@ -94,6 +108,17 @@ class PreparedRecipeExtraction:
     extraction: RecipeExtraction
     input_hash: str
     used_ai: bool
+    from_cache: bool
+
+
+@dataclass(frozen=True)
+class MenuSearchDraft:
+    draft_id: str
+    user_id: int
+    query: str
+    input_hash: str
+    evidence: MenuNutritionEvidence
+    searched_urls: tuple[str, ...]
     from_cache: bool
 
 
@@ -166,6 +191,14 @@ def _product_text(version) -> str:
             lines.append("참고: 포장지에서 추정치 또는 참고값으로 표시된 영양정보")
     if version.source == MFDS_SOURCE:
         lines.append("출처: 식품의약품안전처 식품영양성분DB")
+    elif version.source == "brand_menu":
+        raw_data = version.raw_data if isinstance(version.raw_data, dict) else {}
+        source_data = raw_data.get("official_menu", {})
+        source_title = source_data.get("source_title") if isinstance(source_data, dict) else None
+        source_url = source_data.get("source_url") if isinstance(source_data, dict) else None
+        lines.append(f"출처: {source_title or '브랜드 공식 영양정보'}")
+        if isinstance(source_url, str) and source_url.startswith(("https://", "http://")):
+            lines.append(source_url)
     elif version.source == "recipe":
         lines.append("출처: 사용자 레시피 · 재료 영양값은 저장된 식품 DB 기준")
     package_details = []
@@ -176,7 +209,8 @@ def _product_text(version) -> str:
     if version.piece_count is not None:
         package_details.append(f"{_fmt(version.piece_count)}개")
     if package_details:
-        lines.append("포장 정보: " + " · ".join(package_details))
+        detail_label = "메뉴 단위" if version.source == "brand_menu" else "포장 정보"
+        lines.append(f"{detail_label}: " + " · ".join(package_details))
     return "\n".join(lines)
 
 
@@ -756,6 +790,72 @@ def _recipe_candidate(draft: RecipeDraft) -> ProductCandidate:
     )
 
 
+def _menu_draft_text(draft: MenuSearchDraft) -> str:
+    evidence = draft.evidence
+    cache_text = "저장된 최근 검색 결과" if draft.from_cache else "방금 확인한 검색 결과"
+    return (
+        f"{evidence.brand} · {evidence.menu_name}\n"
+        f"영양 기준: {evidence.basis_text}\n"
+        f"{_fmt(evidence.kcal)} kcal · 탄 {_fmt(evidence.carbs_g)} g · "
+        f"단 {_fmt(evidence.protein_g)} g · 지 {_fmt(evidence.fat_g)} g\n\n"
+        f"출처: {evidence.source_title or '브랜드 공식 영양정보'}\n"
+        f"{evidence.source_url}\n"
+        f"검증: {cache_text} · 신뢰도 {_fmt(evidence.confidence * 100)}%\n\n"
+        "메뉴명·크기와 공식 페이지의 숫자를 확인한 뒤 저장해 주세요."
+    )
+
+
+def _menu_confirmation_keyboard(draft_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="공식 정보 저장",
+                    callback_data=f"menu_save:{draft_id}",
+                ),
+                InlineKeyboardButton(
+                    text="취소",
+                    callback_data=f"menu_cancel:{draft_id}",
+                ),
+            ]
+        ]
+    )
+
+
+def _menu_candidate(draft: MenuSearchDraft) -> ProductCandidate:
+    evidence = draft.evidence
+    if not is_usable_menu_evidence(evidence, draft.searched_urls):
+        raise MenuLookupError("공식 출처가 검증되지 않은 메뉴 정보입니다.")
+    return ProductCandidate(
+        external_source="brand_menu",
+        external_id=draft.input_hash,
+        name=evidence.menu_name or draft.query,
+        brand=evidence.brand,
+        basis_amount=evidence.basis_amount or Decimal("1"),
+        basis_unit=evidence.basis_unit or "serving",
+        servings_per_package=(Decimal("1") if evidence.basis_unit == "serving" else None),
+        kcal=evidence.kcal or Decimal("0"),
+        carbs_g=evidence.carbs_g or Decimal("0"),
+        protein_g=evidence.protein_g or Decimal("0"),
+        fat_g=evidence.fat_g or Decimal("0"),
+        source="brand_menu",
+        verified=True,
+        estimated_values=False,
+        basis_text=evidence.basis_text,
+        raw_data={
+            "official_menu": {
+                "query": draft.query,
+                "input_hash": draft.input_hash,
+                "search_version": MENU_SEARCH_VERSION,
+                "source_url": evidence.source_url,
+                "source_title": evidence.source_title,
+                "confidence": str(evidence.confidence),
+                "evidence_text": evidence.evidence_text,
+            }
+        },
+    )
+
+
 def create_router(context: BotContext) -> Router:
     router = Router(name="calorie-bot")
     pending_portions: dict[int, int] = {}
@@ -763,6 +863,9 @@ def create_router(context: BotContext) -> Router:
     recipe_drafts: dict[str, RecipeDraft] = {}
     recipe_ai_last_request: dict[int, float] = {}
     recipe_locks: dict[int, asyncio.Lock] = {}
+    menu_drafts: dict[str, MenuSearchDraft] = {}
+    menu_ai_last_request: dict[int, float] = {}
+    menu_locks: dict[int, asyncio.Lock] = {}
 
     async def process_recipe_message(
         message: Message,
@@ -808,6 +911,140 @@ def create_router(context: BotContext) -> Router:
             reply_markup=_recipe_confirmation_keyboard(draft.draft_id),
         )
 
+    async def process_menu_search(message: Message, *, query: str, input_hash: str) -> None:
+        user_id = message.from_user.id if message.from_user else 0
+        lock = menu_locks.setdefault(user_id, asyncio.Lock())
+        if lock.locked():
+            await message.answer("이미 외식 메뉴를 검색 중입니다. 잠시만 기다려 주세요.")
+            return
+        async with lock:
+            await process_menu_search_unlocked(message, query=query, input_hash=input_hash)
+
+    async def process_menu_search_unlocked(
+        message: Message, *, query: str, input_hash: str
+    ) -> None:
+        user_id = message.from_user.id if message.from_user else 0
+        async with context.sessions() as session:
+            cached = await get_menu_search_cache(
+                session,
+                input_hash=input_hash,
+                search_version=MENU_SEARCH_VERSION,
+                max_age_days=context.settings.menu_search_cache_days,
+            )
+        if cached is not None:
+            evidence = MenuNutritionEvidence.model_validate(cached.result_json)
+            searched_urls = tuple(cached.searched_urls or [])
+            if not is_usable_menu_evidence(evidence, searched_urls):
+                await message.answer(
+                    "최근 검색에서 이 메뉴의 완전한 공식 영양정보를 찾지 못했습니다.\n"
+                    f"{context.settings.menu_search_cache_days}일 동안 같은 검색은 AI를 다시 "
+                    "호출하지 않습니다. 일반 음식값은 /food 로 찾아볼 수 있습니다."
+                )
+                return
+            draft = MenuSearchDraft(
+                draft_id=uuid4().hex[:16],
+                user_id=user_id,
+                query=query,
+                input_hash=input_hash,
+                evidence=evidence,
+                searched_urls=searched_urls,
+                from_cache=True,
+            )
+        else:
+            if context.menu_searcher is None:
+                await message.answer("외식 메뉴 검색에는 OPENAI_API_KEY 설정이 필요합니다.")
+                return
+            elapsed = monotonic() - menu_ai_last_request.get(user_id, -10_000)
+            cooldown = context.settings.menu_ai_cooldown_seconds
+            if elapsed < cooldown:
+                await message.answer(
+                    f"AI 외식 메뉴 검색은 {cooldown - elapsed:.0f}초 뒤 다시 시도할 수 있습니다."
+                )
+                return
+
+            await message.answer(
+                f"‘{query}’의 공식 브랜드 영양정보를 찾는 중입니다. 최대 1회만 검색합니다."
+            )
+            async with context.sessions() as session:
+                await ensure_user(session, user_id, context.settings.app_timezone)
+                usage, limit_error = await reserve_ai_usage(
+                    session,
+                    user_id=user_id,
+                    feature="menu_lookup",
+                    input_hash=input_hash,
+                    timezone_name=context.settings.app_timezone,
+                    daily_limit=context.settings.menu_ai_daily_limit,
+                    monthly_limit=context.settings.menu_ai_monthly_limit,
+                    feature_label="AI 외식 메뉴 검색",
+                    global_daily_limit=context.settings.menu_ai_global_daily_limit,
+                    global_monthly_limit=context.settings.menu_ai_global_monthly_limit,
+                )
+                await session.commit()
+            if usage is None:
+                await message.answer(limit_error or "AI 외식 메뉴 검색 한도에 도달했습니다.")
+                return
+
+            menu_ai_last_request[user_id] = monotonic()
+            try:
+                result = await context.menu_searcher.search(query=query, user_id=user_id)
+            except Exception as exc:
+                logger.exception("OpenAI official menu search failed")
+                async with context.sessions() as session:
+                    await finish_ai_usage(
+                        session,
+                        usage.id,
+                        status="failed",
+                        error=type(exc).__name__,
+                    )
+                    await session.commit()
+                await message.answer("공식 메뉴 검색에 실패했습니다. 잠시 후 다시 시도해 주세요.")
+                return
+
+            async with context.sessions() as session:
+                await finish_ai_usage(
+                    session,
+                    usage.id,
+                    status="completed",
+                    input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
+                    total_tokens=result.total_tokens,
+                )
+                await save_menu_search_cache(
+                    session,
+                    input_hash=input_hash,
+                    search_version=MENU_SEARCH_VERSION,
+                    query=query,
+                    result_json=result.evidence.model_dump(mode="json"),
+                    searched_urls=list(result.searched_urls),
+                )
+                await session.commit()
+
+            if not is_usable_menu_evidence(result.evidence, result.searched_urls):
+                await message.answer(
+                    "정확한 메뉴·제공량·칼로리·탄단지가 모두 적힌 공식 브랜드 자료를 "
+                    "찾지 못했습니다. 추정값은 만들지 않았습니다.\n"
+                    "일반 음식값은 /food 메뉴명으로 찾아볼 수 있습니다."
+                )
+                return
+            draft = MenuSearchDraft(
+                draft_id=uuid4().hex[:16],
+                user_id=user_id,
+                query=query,
+                input_hash=input_hash,
+                evidence=result.evidence,
+                searched_urls=result.searched_urls,
+                from_cache=False,
+            )
+
+        for draft_id, old_draft in list(menu_drafts.items()):
+            if old_draft.user_id == user_id:
+                menu_drafts.pop(draft_id, None)
+        menu_drafts[draft.draft_id] = draft
+        await message.answer(
+            _menu_draft_text(draft),
+            reply_markup=_menu_confirmation_keyboard(draft.draft_id),
+        )
+
     @router.message(Command("whoami"))
     async def whoami(message: Message) -> None:
         user_id = message.from_user.id if message.from_user else 0
@@ -824,7 +1061,7 @@ def create_router(context: BotContext) -> Router:
             "칼로리 기록 봇이 준비됐습니다.\n\n"
             "1) 바코드를 크게 찍어 보내세요.\n"
             "2) 처음 보는 제품이면 안내에 따라 앞면과 영양정보 표를 보내세요.\n"
-            "3) 일반 음식은 /food, 요리는 /recipe 로 기록할 수 있습니다.\n"
+            "3) 일반 음식은 /food, 외식 메뉴는 /menu, 요리는 /recipe 로 기록할 수 있습니다.\n"
             "4) 숫자를 확인한 뒤 기록 버튼을 누르세요.\n\n"
             "명령어는 /help 에서 볼 수 있습니다."
         )
@@ -840,6 +1077,7 @@ def create_router(context: BotContext) -> Router:
             "/undo — 마지막 기록 취소\n"
             "/goal 2000 250 130 60 — kcal/탄/단/지 목표\n"
             "/food 삶은 달걀 — 일반 음식 검색\n"
+            "/menu 스타벅스 카페 라떼 Tall — 외식 메뉴 공식 영양정보 검색\n"
             "/recipe 김치볶음밥 — 재료로 레시피 계산\n"
             "/barcode 8801234567890 — 바코드 숫자로 시작\n"
             "/manual 이름 | kcal | 탄수 | 단백질 | 지방 — 직접 기록\n"
@@ -981,6 +1219,43 @@ def create_router(context: BotContext) -> Router:
             "자연어 문장도 가능하지만, 위 형식은 OpenAI를 호출하지 않습니다.\n"
             "취소하려면 /cancel"
         )
+
+    @router.message(Command("menu"))
+    async def menu_search(message: Message) -> None:
+        if not await _guard(message, context.settings):
+            return
+        user_id = message.from_user.id
+        text_value = message.text or ""
+        command_token = text_value.split(maxsplit=1)[0] if text_value.split() else "/menu"
+        raw_query = text_value[len(command_token) :].strip()
+        try:
+            query = normalize_menu_query(
+                raw_query,
+                max_chars=context.settings.menu_ai_max_query_chars,
+            )
+        except MenuLookupError as exc:
+            await message.answer(
+                f"형식: /menu 브랜드명 메뉴명 크기\n예: /menu 스타벅스 카페 라떼 Tall\n\n{exc}"
+            )
+            return
+
+        pending_portions.pop(user_id, None)
+        pending_recipe_names.pop(user_id, None)
+        for draft_id, draft in list(menu_drafts.items()):
+            if draft.user_id == user_id:
+                menu_drafts.pop(draft_id, None)
+        input_hash = menu_query_hash(query)
+        async with context.sessions() as session:
+            await ensure_user(session, user_id, context.settings.app_timezone)
+            version = await find_product_by_external_id(session, "brand_menu", input_hash)
+            await session.commit()
+        if version is not None:
+            await message.answer(
+                "저장된 공식 메뉴 영양정보를 불러왔습니다. AI를 호출하지 않았습니다."
+            )
+            await _offer_version(context, message, version)
+            return
+        await process_menu_search(message, query=query, input_hash=input_hash)
 
     @router.message(Command("manual"))
     async def manual(message: Message) -> None:
@@ -1143,6 +1418,10 @@ def create_router(context: BotContext) -> Router:
         for draft_id, draft in list(recipe_drafts.items()):
             if draft.user_id == message.from_user.id:
                 recipe_drafts.pop(draft_id, None)
+                removed_draft = True
+        for draft_id, draft in list(menu_drafts.items()):
+            if draft.user_id == message.from_user.id:
+                menu_drafts.pop(draft_id, None)
                 removed_draft = True
         async with context.sessions() as session:
             job = await get_active_job(session, message.from_user.id)
@@ -1525,6 +1804,57 @@ def create_router(context: BotContext) -> Router:
         await _clear_inline_keyboard(callback)
         if callback.message:
             await callback.message.answer("레시피를 저장하지 않았습니다.")
+
+    @router.callback_query(F.data.startswith("menu_save:"))
+    async def save_menu(callback: CallbackQuery) -> None:
+        if not callback.from_user or not _allowed(callback.from_user.id, context.settings):
+            await callback.answer("사용 권한이 없습니다.", show_alert=True)
+            return
+        draft_id = (callback.data or "").partition(":")[2]
+        draft = menu_drafts.get(draft_id)
+        if draft is None or draft.user_id != callback.from_user.id:
+            await callback.answer("만료되었거나 처리된 메뉴 검색입니다.", show_alert=True)
+            return
+        try:
+            candidate = _menu_candidate(draft)
+        except MenuLookupError as exc:
+            menu_drafts.pop(draft_id, None)
+            await callback.answer(str(exc), show_alert=True)
+            await _clear_inline_keyboard(callback)
+            return
+        async with context.sessions() as session:
+            await ensure_user(session, callback.from_user.id, context.settings.app_timezone)
+            version = await get_or_create_catalog_product(session, candidate)
+            await session.commit()
+        menu_drafts.pop(draft_id, None)
+        await callback.answer("공식 메뉴 정보를 저장했습니다.")
+        await _clear_inline_keyboard(callback)
+        if callback.message:
+            await callback.message.answer(
+                "공식 출처와 함께 저장했습니다. 다음부터 같은 검색은 AI를 호출하지 않습니다."
+            )
+            await _offer_version(
+                context,
+                callback.message,
+                version,
+                user_id=callback.from_user.id,
+            )
+
+    @router.callback_query(F.data.startswith("menu_cancel:"))
+    async def cancel_menu(callback: CallbackQuery) -> None:
+        if not callback.from_user or not _allowed(callback.from_user.id, context.settings):
+            await callback.answer("사용 권한이 없습니다.", show_alert=True)
+            return
+        draft_id = (callback.data or "").partition(":")[2]
+        draft = menu_drafts.get(draft_id)
+        if draft is None or draft.user_id != callback.from_user.id:
+            await callback.answer("만료되었거나 처리된 메뉴 검색입니다.", show_alert=True)
+            return
+        menu_drafts.pop(draft_id, None)
+        await callback.answer("취소했습니다.")
+        await _clear_inline_keyboard(callback)
+        if callback.message:
+            await callback.message.answer("메뉴 정보를 저장하지 않았습니다.")
 
     @router.message(F.text)
     async def custom_portion(message: Message) -> None:
