@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import Select, desc, func, or_, select, update
+from sqlalchemy import Select, and_, desc, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
@@ -15,6 +15,7 @@ from app.models import (
     IntakeLog,
     MenuSearchCache,
     Product,
+    ProductSearchTerm,
     ProductVersion,
     RecipeParseCache,
     RecognitionJob,
@@ -23,6 +24,11 @@ from app.models import (
 )
 from app.nutrition import MacroTotals
 from app.schemas import ProductCandidate
+from app.search_tags import (
+    build_product_search_terms,
+    concept_keys_for_query,
+    normalize_search_term,
+)
 
 ACTIVE_JOB_STATES = ("awaiting_front", "awaiting_label", "processing", "awaiting_confirm")
 
@@ -116,6 +122,83 @@ async def search_catalog_products(
     )
 
 
+def _saved_tag_filter(query: str):
+    normalized_query = normalize_search_term(query)
+    if not normalized_query:
+        return None
+    tag_filters = [
+        ProductSearchTerm.normalized_term.ilike(
+            f"%{_escaped_like(normalized_query)}%",
+            escape="\\",
+        )
+    ]
+    concepts = concept_keys_for_query(query)
+    if concepts:
+        tag_filters.append(ProductSearchTerm.concept_key.in_(concepts))
+    return (
+        select(ProductSearchTerm.id)
+        .where(
+            ProductSearchTerm.product_id == Product.id,
+            or_(*tag_filters),
+        )
+        .exists()
+    )
+
+
+async def search_saved_products(
+    session: AsyncSession,
+    *,
+    owner_id: int,
+    query: str,
+    limit: int = 40,
+) -> list[ProductVersion]:
+    clean_query = " ".join(query.split()).strip()
+    if not clean_query:
+        return []
+    full_pattern = f"%{_escaped_like(clean_query)}%"
+    token_filters = []
+    for term in dict.fromkeys(clean_query.split()):
+        pattern = f"%{_escaped_like(term)}%"
+        alternatives = [
+            Product.name.ilike(pattern, escape="\\"),
+            Product.brand.ilike(pattern, escape="\\"),
+        ]
+        tag_filter = _saved_tag_filter(term)
+        if tag_filter is not None:
+            alternatives.append(tag_filter)
+        token_filters.append(or_(*alternatives))
+    filters = [
+        Product.name.ilike(full_pattern, escape="\\"),
+        Product.brand.ilike(full_pattern, escape="\\"),
+        and_(*token_filters),
+    ]
+    if len(clean_query.split()) == 1:
+        full_tag_filter = _saved_tag_filter(clean_query)
+        if full_tag_filter is not None:
+            filters.append(full_tag_filter)
+    if clean_query.isdigit():
+        filters.append(Product.barcode == clean_query)
+    return list(
+        (
+            await session.scalars(
+                select(ProductVersion)
+                .join(Product)
+                .options(joinedload(ProductVersion.product).selectinload(Product.search_terms))
+                .where(
+                    ProductVersion.is_current.is_(True),
+                    or_(Product.owner_telegram_id.is_(None), Product.owner_telegram_id == owner_id),
+                    or_(*filters),
+                )
+                .order_by(
+                    desc(Product.owner_telegram_id == owner_id),
+                    ProductVersion.created_at.desc(),
+                )
+                .limit(limit)
+            )
+        ).all()
+    )
+
+
 async def search_recipe_products(
     session: AsyncSession,
     *,
@@ -162,6 +245,48 @@ async def get_product_version(
             ProductVersion.id == version_id,
             or_(Product.owner_telegram_id.is_(None), Product.owner_telegram_id == owner_id),
         )
+    )
+
+
+async def _ensure_product_search_terms(
+    session: AsyncSession,
+    *,
+    product: Product,
+    candidate: ProductCandidate,
+) -> None:
+    specs = build_product_search_terms(
+        name=candidate.name,
+        brand=candidate.brand,
+        raw_data=candidate.raw_data,
+        search_concepts=candidate.search_concepts,
+        search_terms_ko=candidate.search_terms_ko,
+        search_terms_ja=candidate.search_terms_ja,
+        product_source=candidate.source,
+    )
+    if not specs:
+        return
+    existing_terms = set(
+        (
+            await session.scalars(
+                select(ProductSearchTerm.normalized_term).where(
+                    ProductSearchTerm.product_id == product.id
+                )
+            )
+        ).all()
+    )
+    session.add_all(
+        ProductSearchTerm(
+            product_id=product.id,
+            term=spec.term,
+            normalized_term=spec.normalized_term,
+            locale=spec.locale,
+            kind=spec.kind,
+            source=spec.source,
+            concept_key=spec.concept_key,
+            confidence=spec.confidence,
+        )
+        for spec in specs
+        if spec.normalized_term not in existing_terms
     )
 
 
@@ -237,6 +362,7 @@ async def create_product_version(
         raw_data=candidate.raw_data,
     )
     session.add(version)
+    await _ensure_product_search_terms(session, product=product, candidate=candidate)
     await session.flush()
     return version
 

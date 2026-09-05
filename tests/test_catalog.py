@@ -8,7 +8,10 @@ def test_open_food_facts_payload_mapping() -> None:
         "status": "success",
         "product": {
             "product_name_ko": "테스트 과자",
+            "product_name_ja": "テスト菓子",
             "brands": "테스트 브랜드",
+            "categories": "Snacks",
+            "categories_tags": ["en:snacks"],
             "quantity": "80 g",
             "nutriments": {
                 "energy-kcal_100g": 510,
@@ -28,6 +31,9 @@ def test_open_food_facts_payload_mapping() -> None:
     assert candidate.fat_g == Decimal("26.5")
     assert candidate.package_amount == Decimal("80")
     assert candidate.package_unit == "g"
+    assert candidate.search_terms_ko == ["테스트 과자"]
+    assert candidate.search_terms_ja == ["テスト菓子"]
+    assert candidate.raw_data["categories_tags"] == ["en:snacks"]
 
 
 def test_open_food_facts_requires_kcal() -> None:

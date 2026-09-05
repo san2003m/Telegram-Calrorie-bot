@@ -45,6 +45,9 @@ def test_recognition_parses_expected_json() -> None:
       "package_amount": {"amount": 100, "unit": "g"},
       "servings_per_package": 1,
       "piece_count": 1,
+      "search_concepts": ["chicken_breast", "high_protein"],
+      "search_terms_ko": ["닭가슴살", "고단백"],
+      "search_terms_ja": ["鶏むね肉", "高たんぱく"],
       "evidence_text": ["100 g당 120 kcal"],
       "estimated_values": false,
       "confidence": 0.96
@@ -59,3 +62,5 @@ def test_recognition_parses_expected_json() -> None:
     assert result.piece_count == 1
     assert result.label_market == "KR"
     assert result.nutrition_basis.raw_text == "총 내용량 100g당"
+    assert result.search_concepts == ["chicken_breast", "high_protein"]
+    assert result.search_terms_ja == ["鶏むね肉", "高たんぱく"]

@@ -80,6 +80,7 @@ async def run() -> None:
             BotCommand(command="recent", description="최근 기록"),
             BotCommand(command="undo", description="마지막 기록 취소"),
             BotCommand(command="goal", description="일일 목표 설정"),
+            BotCommand(command="search", description="저장된 상품 검색"),
             BotCommand(command="food", description="일반 음식 검색"),
             BotCommand(command="menu", description="외식 메뉴 공식 영양정보 검색"),
             BotCommand(command="recipe", description="재료로 레시피 계산"),

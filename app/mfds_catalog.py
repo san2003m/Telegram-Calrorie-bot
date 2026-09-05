@@ -252,6 +252,7 @@ def candidate_from_item(item: dict) -> ProductCandidate | None:
         basis_metric_unit=basis_unit,
         basis_count_amount=basis_count,
         basis_count_unit="개" if basis_count is not None else None,
+        search_terms_ko=[category] if category else [],
         kcal=kcal,
         carbs_g=carbs,
         protein_g=protein,

@@ -41,6 +41,9 @@ def _recognition_payload() -> str:
             "package_amount": {"amount": 100, "unit": "g"},
             "servings_per_package": 1,
             "piece_count": None,
+            "search_concepts": ["snack"],
+            "search_terms_ko": ["과자"],
+            "search_terms_ja": ["お菓子"],
             "evidence_text": ["100g당 120 kcal"],
             "confidence": 0.95,
             "estimated_values": False,
@@ -59,6 +62,7 @@ async def test_recognizer_accepts_one_photo_and_uses_original_detail(tmp_path) -
     result = await recognizer.recognize_images([image_path])
 
     assert result.product_name == "한 장 인식 제품"
+    assert result.search_terms_ja == ["お菓子"]
     request = create.await_args.kwargs
     content = request["input"][0]["content"]
     image_inputs = [item for item in content if item["type"] == "input_image"]

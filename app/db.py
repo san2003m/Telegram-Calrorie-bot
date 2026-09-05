@@ -94,6 +94,72 @@ def _backfill_legacy_package_amounts(connection: Connection) -> None:
         )
 
 
+def _backfill_product_search_terms(connection: Connection) -> None:
+    inspector = inspect(connection)
+    table_names = set(inspector.get_table_names())
+    if not {"products", "product_versions", "product_search_terms"} <= table_names:
+        return
+    product_columns = {column["name"] for column in inspector.get_columns("products")}
+    version_columns = {column["name"] for column in inspector.get_columns("product_versions")}
+    if not {"id", "name", "brand", "source"} <= product_columns:
+        return
+    if not {"product_id", "is_current", "raw_data"} <= version_columns:
+        return
+
+    from app.models import ProductSearchTerm
+    from app.search_tags import build_product_search_terms
+
+    rows = connection.execute(
+        text(
+            "SELECT p.id, p.name, p.brand, p.source, pv.raw_data "
+            "FROM products p "
+            "LEFT JOIN product_versions pv "
+            "ON pv.product_id = p.id AND pv.is_current = TRUE "
+            "WHERE NOT EXISTS ("
+            "SELECT 1 FROM product_search_terms pst WHERE pst.product_id = p.id)"
+        )
+    ).mappings()
+    seen_product_ids: set[int] = set()
+    for row in rows:
+        product_id = int(row["id"])
+        if product_id in seen_product_ids:
+            continue
+        seen_product_ids.add(product_id)
+        raw_data = row["raw_data"]
+        if isinstance(raw_data, str):
+            try:
+                raw_data = json.loads(raw_data)
+            except json.JSONDecodeError:
+                raw_data = None
+        search_concepts = raw_data.get("search_concepts", []) if isinstance(raw_data, dict) else []
+        search_terms_ko = raw_data.get("search_terms_ko", []) if isinstance(raw_data, dict) else []
+        search_terms_ja = raw_data.get("search_terms_ja", []) if isinstance(raw_data, dict) else []
+        specs = build_product_search_terms(
+            name=str(row["name"]),
+            brand=str(row["brand"]) if row["brand"] else None,
+            raw_data=raw_data if isinstance(raw_data, dict) else None,
+            search_concepts=search_concepts if isinstance(search_concepts, list) else [],
+            search_terms_ko=search_terms_ko if isinstance(search_terms_ko, list) else [],
+            search_terms_ja=search_terms_ja if isinstance(search_terms_ja, list) else [],
+            product_source=str(row["source"]),
+        )
+        values = [
+            {
+                "product_id": product_id,
+                "term": spec.term,
+                "normalized_term": spec.normalized_term,
+                "locale": spec.locale,
+                "kind": spec.kind,
+                "source": spec.source,
+                "concept_key": spec.concept_key,
+                "confidence": spec.confidence,
+            }
+            for spec in specs
+        ]
+        if values:
+            connection.execute(ProductSearchTerm.__table__.insert(), values)
+
+
 class Database:
     def __init__(self, url: str, *, echo: bool = False) -> None:
         self.engine: AsyncEngine = create_async_engine(url, echo=echo, pool_pre_ping=True)
@@ -106,6 +172,7 @@ class Database:
             await connection.run_sync(Base.metadata.create_all)
             await connection.run_sync(_add_compatibility_columns)
             await connection.run_sync(_backfill_legacy_package_amounts)
+            await connection.run_sync(_backfill_product_search_terms)
 
     async def session(self) -> AsyncIterator[AsyncSession]:
         async with self.sessions() as session:

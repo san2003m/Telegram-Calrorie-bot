@@ -57,10 +57,38 @@ class Product(Base):
     versions: Mapped[list[ProductVersion]] = relationship(
         back_populates="product", cascade="all, delete-orphan"
     )
+    search_terms: Mapped[list[ProductSearchTerm]] = relationship(
+        back_populates="product", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         UniqueConstraint("barcode", "owner_telegram_id", name="uq_product_barcode_owner"),
         Index("ix_product_external_source_id", "external_source", "external_id", unique=True),
+    )
+
+
+class ProductSearchTerm(Base):
+    __tablename__ = "product_search_terms"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
+    term: Mapped[str] = mapped_column(String(64))
+    normalized_term: Mapped[str] = mapped_column(String(64), index=True)
+    locale: Mapped[str] = mapped_column(String(8), default="und")
+    kind: Mapped[str] = mapped_column(String(24), default="alias")
+    source: Mapped[str] = mapped_column(String(24), default="dictionary")
+    concept_key: Mapped[str | None] = mapped_column(String(48), nullable=True, index=True)
+    confidence: Mapped[Decimal] = mapped_column(Numeric(4, 3), default=Decimal("1"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    product: Mapped[Product] = relationship(back_populates="search_terms")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "product_id",
+            "normalized_term",
+            name="uq_product_search_term_normalized",
+        ),
     )
 
 

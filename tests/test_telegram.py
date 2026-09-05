@@ -14,10 +14,13 @@ from app.telegram import (
     _format_uptime,
     _menu_candidate,
     _product_text,
+    _rank_saved_products,
+    _recent_products_keyboard,
     _recipe_candidate,
     _recognition_follow_up_text,
     _recognition_is_complete,
     _recognition_result_text,
+    _saved_products_keyboard,
     _stored_quick_portions,
 )
 
@@ -30,6 +33,100 @@ def test_format_uptime() -> None:
 
 def test_format_uptime_does_not_show_negative_time() -> None:
     assert _format_uptime(-10) == "0초"
+
+
+def test_saved_product_ranking_prefers_exact_private_match() -> None:
+    own_exact = SimpleNamespace(
+        id=10,
+        product=SimpleNamespace(
+            name="닭가슴살",
+            brand="개인",
+            owner_telegram_id=1234,
+        ),
+    )
+    public_exact = SimpleNamespace(
+        id=20,
+        product=SimpleNamespace(
+            name="닭가슴살",
+            brand="공개",
+            owner_telegram_id=None,
+        ),
+    )
+    public_partial = SimpleNamespace(
+        id=30,
+        product=SimpleNamespace(
+            name="훈제 닭가슴살 소시지",
+            brand=None,
+            owner_telegram_id=None,
+        ),
+    )
+
+    ranked = _rank_saved_products(
+        "닭가슴살",
+        [public_partial, public_exact, own_exact],
+        user_id=1234,
+    )
+
+    assert [version.id for version in ranked] == [10, 20, 30]
+
+
+def test_recent_product_keyboard_deduplicates_products() -> None:
+    first_version = SimpleNamespace(id=10, product=SimpleNamespace(name="닭가슴살"))
+    second_version = SimpleNamespace(id=20, product=SimpleNamespace(name="삶은 달걀"))
+    logs = [
+        SimpleNamespace(
+            product_version_id=10,
+            product_version=first_version,
+            multiplier=Decimal("1"),
+            input_amount=Decimal("100"),
+            input_unit="g",
+        ),
+        SimpleNamespace(
+            product_version_id=10,
+            product_version=first_version,
+            multiplier=Decimal("0.5"),
+            input_amount=Decimal("50"),
+            input_unit="g",
+        ),
+        SimpleNamespace(
+            product_version_id=20,
+            product_version=second_version,
+            multiplier=Decimal("2"),
+            input_amount=Decimal("2"),
+            input_unit="piece",
+        ),
+    ]
+
+    keyboard = _recent_products_keyboard(logs)
+
+    assert len(keyboard.inline_keyboard) == 2
+    assert keyboard.inline_keyboard[0][0].callback_data == "pick:10"
+    assert keyboard.inline_keyboard[1][0].callback_data == "pick:20"
+
+
+def test_saved_product_keyboard_explains_tag_only_match() -> None:
+    version = SimpleNamespace(
+        id=10,
+        product=SimpleNamespace(
+            name="ゆで卵パック",
+            brand=None,
+            owner_telegram_id=1234,
+            search_terms=[
+                SimpleNamespace(
+                    term="계란",
+                    normalized_term="계란",
+                    concept_key="egg",
+                )
+            ],
+        ),
+        basis_amount=Decimal("1"),
+        basis_unit="piece",
+        kcal=Decimal("70"),
+    )
+
+    keyboard = _saved_products_keyboard([version], "계란")
+
+    assert keyboard.inline_keyboard[0][0].text.startswith("#계란 · ゆで卵パック")
 
 
 def test_liquid_unit_correction_creates_private_candidate_data() -> None:
@@ -84,6 +181,9 @@ def test_japanese_recognition_preserves_basis_and_converts_salt() -> None:
         ),
         package_amount={"amount": Decimal("200"), "unit": "ml"},
         piece_count=Decimal("1"),
+        search_concepts=["beverage"],
+        search_terms_ko=["일본 음료"],
+        search_terms_ja=["飲料"],
         confidence=Decimal("0.95"),
     )
 
@@ -94,11 +194,16 @@ def test_japanese_recognition_preserves_basis_and_converts_salt() -> None:
     assert candidate.basis_text == "1本（200ml）当たり"
     assert candidate.basis_count_amount == Decimal("1")
     assert candidate.basis_count_unit == "本"
+    assert candidate.search_concepts == ["beverage"]
     assert candidate.sodium_mg == Decimal("315.0")
     assert candidate.sodium_derived is True
     assert "🇯🇵 일본" in text
     assert "식염상당량 0.8 g" in text
     assert "나트륨 315 mg (식염상당량에서 환산)" in text
+    assert "검색 태그:" in text
+    assert "일본 음료" in text
+    assert "음료" in text
+    assert "飲料" in text
 
 
 def test_small_salt_value_keeps_required_precision() -> None:

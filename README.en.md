@@ -12,6 +12,7 @@ the user reviews it.
 
 - Scan a barcode from a photo or enter its digits manually
 - Look up products in the local database, then Open Food Facts, then from photos with AI
+- Search saved products by name, brand, barcode, or Korean/Japanese related tags
 - Search general foods through MFDS with commands such as `/food 삶은 달걀` and cache results
 - Search official restaurant-menu nutrition with `/menu brand menu size`
 - Calculate recipe totals and per-serving calories and macros from ingredients with `/recipe`
@@ -21,7 +22,7 @@ the user reviews it.
 - Choose the whole package, half, one serving, or the nutrition-label basis, or enter a custom
   amount
 - Convert `g`, `ml`, item, package, and `%` units, and reuse the last amount consumed
-- View today's totals and recent entries, undo the latest entry, and set daily goals
+- View today's totals, reopen recent products with buttons, undo the latest entry, and set daily goals
 - View today's goals, 7-day and 30-day trends, and recent entries in a private web dashboard
 - Add entries manually
 - Lock the bot to one owner or optionally allow public sign-up
@@ -41,6 +42,10 @@ Telegram photo
           └─ Analyze first photo → request only missing views
               └─ Structured extraction from 1–3 photos with OpenAI
                   └─ User review → Private DB cache → Choose amount → Save entry
+
+Telegram /search product name or plain text while idle
+  └─ Search names, brands, and Korean/Japanese tags in own products + public local DB
+      └─ Select product → Choose amount → Save entry
 
 Telegram /food name
   └─ Local cache → MFDS Food Nutrition Database
@@ -224,6 +229,7 @@ docker compose cp bot:/data/logs ./calorie-logs
 | `/recent` | Show the eight most recent entries |
 | `/undo` | Mark the latest entry as undone without deleting it |
 | `/goal` | `/goal 2000 250 130 60` (kcal, carbohydrates, protein, fat) |
+| `/search` | Search saved products, for example `/search 닭가슴살` |
 | `/food` | Search general foods, for example `/food 삶은 달걀` |
 | `/menu` | Search official brand nutrition, for example `/menu Starbucks Cafe Latte Tall` |
 | `/recipe` | Send `/recipe 김치볶음밥`, then ingredients and total servings |
@@ -231,6 +237,15 @@ docker compose cp bot:/data/logs ./calorie-logs
 | `/manual` | `/manual Chicken breast \| 165 \| 0 \| 31 \| 3.6` |
 | `/cancel` | Cancel an in-progress photo recognition or amount entry |
 | `/whoami` | Show your numeric Telegram user ID |
+
+Use `/search product name` to reuse any product you previously registered or cached. When no other
+input is in progress, sending only the product name performs the same search. In addition to names,
+brands, and barcodes, the bot searches shared food concepts and Korean/Japanese aliases. For
+example, a Japanese product named `ゆで卵` can be found with `계란`. A tag-only match shows its
+reason, such as `#계란`. Results are limited to your private products and public catalog products,
+and the search does not call OpenAI or an external API. Existing products receive deterministic
+tags from their names and cached catalog data at startup. Product buttons under `/recent` reopen
+the amount picker directly.
 
 Photo input works as follows:
 
@@ -305,6 +320,10 @@ API.
   free-form text
 - The same request extracts the Korean or Japanese format, original basis text, sodium, and salt
   equivalent
+- The same request also returns constrained food concepts and Korean/Japanese search tags, so no
+  additional AI request is made
+- The model may not infer health, dieting, or disease-suitability tags; nutrition claims are kept
+  only when they are explicit on the package
 - AI returns only values printed on the label; deterministic Python code performs salt conversion
 - The bot warns about numerical inconsistencies or low confidence and always requires user review
 - Confirmed results are stored in the database, so the same barcode does not trigger another API
@@ -334,9 +353,10 @@ and the [image input guide](https://developers.openai.com/api/docs/guides/images
 
 ## Tests and quality checks
 
-The test suite covers calculations, image resizing, AI JSON validation, recipe parsing, quotas and
-caching, public catalog conversion, user isolation, daily totals, and undo behavior without making
-real Telegram or OpenAI requests.
+The test suite covers calculations, image resizing, AI JSON validation, Korean/Japanese tag
+normalization and cross-language search, recipe parsing, quotas and caching, public catalog
+conversion, user isolation, daily totals, and undo behavior without making real Telegram or OpenAI
+requests.
 
 ```bash
 .venv/bin/ruff check .
@@ -349,6 +369,8 @@ real Telegram or OpenAI requests.
 - A barcode alone contains no nutrition data, so another package view is still required when the
   first photo does not show a readable product name and nutrition label.
 - Coverage of Korean products in Open Food Facts is inconsistent.
+- Specialized food terms and new slang outside the built-in Korean/Japanese tag dictionary require
+  a matching product name or an alias saved during AI recognition.
 - General-food search requires an approved public-data API key in `MFDS_API_KEY`.
 - Piece and serving shortcuts are offered only when the official data provides conversion evidence.
 - Recipe totals add the entered amounts from the selected food records. They do not automatically

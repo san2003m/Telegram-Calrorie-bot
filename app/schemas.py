@@ -5,6 +5,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.search_tags import SEARCH_CONCEPT_KEYS
+
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -49,6 +51,9 @@ class NutritionRecognition(StrictModel):
     package_amount: Amount | None = None
     servings_per_package: Decimal | None = Field(default=None, gt=0, le=10_000)
     piece_count: Decimal | None = Field(default=None, gt=0, le=10_000)
+    search_concepts: list[str] = Field(default_factory=list, max_length=8)
+    search_terms_ko: list[str] = Field(default_factory=list, max_length=4)
+    search_terms_ja: list[str] = Field(default_factory=list, max_length=4)
     evidence_text: list[str] = Field(default_factory=list, max_length=12)
     estimated_values: bool = False
     confidence: Decimal = Field(ge=0, le=1)
@@ -57,6 +62,22 @@ class NutritionRecognition(StrictModel):
     @classmethod
     def clean_name(cls, value: str) -> str:
         return " ".join(value.split())
+
+    @field_validator("search_concepts")
+    @classmethod
+    def validate_search_concepts(cls, values: list[str]) -> list[str]:
+        unknown = set(values) - set(SEARCH_CONCEPT_KEYS)
+        if unknown:
+            raise ValueError(f"지원하지 않는 검색 태그: {', '.join(sorted(unknown))}")
+        return list(dict.fromkeys(values))
+
+    @field_validator("search_terms_ko", "search_terms_ja")
+    @classmethod
+    def clean_search_terms(cls, values: list[str]) -> list[str]:
+        cleaned = list(dict.fromkeys(" ".join(value.split()) for value in values if value.strip()))
+        if any(len(value) > 32 for value in cleaned):
+            raise ValueError("검색어는 각각 32자 이하여야 합니다.")
+        return cleaned
 
 
 class ProductCandidate(BaseModel):
@@ -85,6 +106,9 @@ class ProductCandidate(BaseModel):
     basis_metric_unit: Literal["g", "ml"] | None = None
     basis_count_amount: Decimal | None = None
     basis_count_unit: str | None = None
+    search_concepts: list[str] = Field(default_factory=list, max_length=8)
+    search_terms_ko: list[str] = Field(default_factory=list, max_length=4)
+    search_terms_ja: list[str] = Field(default_factory=list, max_length=4)
     sodium_mg: Decimal | None = None
     salt_equivalent_g: Decimal | None = None
     sodium_derived: bool = False

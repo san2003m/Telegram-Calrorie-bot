@@ -82,11 +82,18 @@ from app.repository import (
     save_recipe_parse_cache,
     search_catalog_products,
     search_recipe_products,
+    search_saved_products,
     set_goals,
     start_job,
     undo_last_intake,
 )
 from app.schemas import NutritionRecognition, ProductCandidate, RecipeExtraction
+from app.search_tags import (
+    build_product_search_terms,
+    matching_term,
+    normalize_search_term,
+    search_term_score,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -347,6 +354,92 @@ def _food_results_keyboard(versions: list) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     text=label[:62],
                     callback_data=f"food:{version.id}",
+                )
+            ]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _search_key(value: str) -> str:
+    return normalize_search_term(value)
+
+
+def _saved_product_score(query: str, version, user_id: int) -> int:
+    query_key = _search_key(query)
+    name_key = _search_key(version.product.name)
+    brand_key = _search_key(version.product.brand or "")
+    combined_key = brand_key + name_key
+    if not query_key:
+        return 0
+    if query_key == name_key:
+        score = 4_000
+    elif query_key == combined_key:
+        score = 3_800
+    elif name_key.startswith(query_key):
+        score = 3_000
+    elif query_key in name_key:
+        score = 2_500
+    elif query_key in combined_key:
+        score = 2_000
+    else:
+        query_terms = [_search_key(term) for term in query.split()]
+        matched_terms = sum(term in combined_key for term in query_terms if term)
+        score = matched_terms * 500
+    score = max(
+        score,
+        search_term_score(query, getattr(version.product, "search_terms", ())),
+    )
+    if version.product.owner_telegram_id == user_id:
+        score += 200
+    return score
+
+
+def _rank_saved_products(query: str, versions: list, user_id: int) -> list:
+    return sorted(
+        versions,
+        key=lambda version: (_saved_product_score(query, version, user_id), version.id),
+        reverse=True,
+    )
+
+
+def _saved_products_keyboard(versions: list, query: str) -> InlineKeyboardMarkup:
+    rows = []
+    for version in versions:
+        brand = f" · {version.product.brand}" if version.product.brand else ""
+        basis = f"{_fmt(version.basis_amount)}{version.basis_unit}"
+        tag = matching_term(query, getattr(version.product, "search_terms", ()))
+        query_key = _search_key(query)
+        direct_text = _search_key(f"{version.product.name} {version.product.brand or ''}")
+        tag_prefix = f"#{tag} · " if tag and query_key not in direct_text else ""
+        label = f"{tag_prefix}{version.product.name}{brand} · {_fmt(version.kcal)}kcal/{basis}"
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=label[:62],
+                    callback_data=f"pick:{version.id}",
+                )
+            ]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _recent_products_keyboard(logs: list[IntakeLog]) -> InlineKeyboardMarkup:
+    rows = []
+    seen_version_ids: set[int] = set()
+    for log in logs:
+        version_id = log.product_version_id
+        if version_id in seen_version_ids:
+            continue
+        seen_version_ids.add(version_id)
+        portion_text = f"×{_fmt(log.multiplier)}"
+        if log.input_amount is not None and log.input_unit:
+            portion_text = display_portion(ParsedPortion(log.input_amount, log.input_unit))
+        label = f"↻ {log.product_version.product.name} · {portion_text}"
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=label[:62],
+                    callback_data=f"pick:{version_id}",
                 )
             ]
         )
@@ -933,6 +1026,34 @@ def create_router(context: BotContext) -> Router:
             if photo_album_tasks.get(key) is current_task:
                 photo_album_tasks.pop(key, None)
 
+    async def process_saved_product_search(message: Message, raw_query: str) -> None:
+        user_id = message.from_user.id if message.from_user else 0
+        query = " ".join(raw_query.split()).strip()
+        if not 1 <= len(query) <= 60:
+            await message.answer("검색어는 1~60자로 입력해 주세요. 예: /search 닭가슴살")
+            return
+        async with context.sessions() as session:
+            await ensure_user(session, user_id, context.settings.app_timezone)
+            versions = await search_saved_products(
+                session,
+                owner_id=user_id,
+                query=query,
+                limit=40,
+            )
+            await session.commit()
+        versions = _rank_saved_products(query, versions, user_id)[:8]
+        if not versions:
+            await message.answer(
+                f"저장된 상품에서 ‘{query}’을(를) 찾지 못했습니다.\n"
+                "포장식품은 바코드 사진으로 등록하고, 일반 음식은 /food 음식명으로 찾아보세요."
+            )
+            return
+        await message.answer(
+            f"‘{query}’ 저장 상품 검색 결과입니다. 제품명·브랜드·한일 태그를 확인했습니다. "
+            "AI와 외부 API를 호출하지 않았습니다.",
+            reply_markup=_saved_products_keyboard(versions, query),
+        )
+
     async def process_recipe_message(
         message: Message,
         *,
@@ -1131,7 +1252,9 @@ def create_router(context: BotContext) -> Router:
             "3) 정보가 부족할 때만 필요한 사진을 추가로 요청합니다. 여러 장은 앨범으로 "
             "한 번에 보낼 수 있습니다.\n"
             "4) 일반 음식은 /food, 외식 메뉴는 /menu, 요리는 /recipe 로 기록할 수 있습니다.\n"
-            "5) 숫자를 확인한 뒤 기록 버튼을 누르세요.\n\n"
+            "5) 등록한 상품은 /search 또는 이름만 입력해 한·일 상품명과 관련 태그로 "
+            "다시 찾을 수 있습니다.\n"
+            "6) 숫자를 확인한 뒤 기록 버튼을 누르세요.\n\n"
             "명령어는 /help 에서 볼 수 있습니다."
         )
 
@@ -1145,6 +1268,7 @@ def create_router(context: BotContext) -> Router:
             "/recent — 최근 기록\n"
             "/undo — 마지막 기록 취소\n"
             "/goal 2000 250 130 60 — kcal/탄/단/지 목표\n"
+            "/search 닭가슴살 — 저장된 상품명·브랜드·한일 태그 검색\n"
             "/food 삶은 달걀 — 일반 음식 검색\n"
             "/menu 스타벅스 카페 라떼 Tall — 외식 메뉴 공식 영양정보 검색\n"
             "/recipe 김치볶음밥 — 재료로 레시피 계산\n"
@@ -1228,7 +1352,11 @@ def create_router(context: BotContext) -> Router:
             if log.input_amount is not None and log.input_unit:
                 portion_text = display_portion(ParsedPortion(log.input_amount, log.input_unit))
             lines.append(f"· {name} · {portion_text} — {_fmt(log.kcal)} kcal")
-        await message.answer("\n".join(lines))
+        lines.append("\n아래 버튼을 누르면 해당 상품의 섭취량을 다시 선택할 수 있습니다.")
+        await message.answer(
+            "\n".join(lines),
+            reply_markup=_recent_products_keyboard(logs),
+        )
 
     @router.message(Command("undo"))
     async def undo(message: Message) -> None:
@@ -1372,6 +1500,18 @@ def create_router(context: BotContext) -> Router:
             )
             await session.commit()
         await message.answer(f"기록됨: {candidate.name} · {_fmt(log.kcal)} kcal")
+
+    @router.message(Command("search"))
+    async def search_saved(message: Message) -> None:
+        if not await _guard(message, context.settings):
+            return
+        user_id = message.from_user.id
+        text_value = message.text or ""
+        command_token = text_value.split(maxsplit=1)[0] if text_value.split() else "/search"
+        query = text_value[len(command_token) :].strip()
+        pending_portions.pop(user_id, None)
+        pending_recipe_names.pop(user_id, None)
+        await process_saved_product_search(message, query)
 
     @router.message(Command("food"))
     async def food_search(message: Message) -> None:
@@ -1619,6 +1759,32 @@ def create_router(context: BotContext) -> Router:
             await callback.message.answer(
                 f"기록됨: {version.product.name} · {display_portion(portion)} · "
                 f"{_fmt(log.kcal)} kcal"
+            )
+
+    @router.callback_query(F.data.startswith("pick:"))
+    async def pick_saved_product(callback: CallbackQuery) -> None:
+        if not callback.from_user or not _allowed(callback.from_user.id, context.settings):
+            await callback.answer("사용 권한이 없습니다.", show_alert=True)
+            return
+        try:
+            version_id = int((callback.data or "").partition(":")[2])
+        except ValueError:
+            await callback.answer("잘못된 요청입니다.", show_alert=True)
+            return
+        async with context.sessions() as session:
+            version = await get_product_version(session, version_id, callback.from_user.id)
+        if version is None:
+            await callback.answer("상품 정보를 찾지 못했습니다.", show_alert=True)
+            return
+        pending_portions.pop(callback.from_user.id, None)
+        await callback.answer()
+        await _clear_inline_keyboard(callback)
+        if callback.message:
+            await _offer_version(
+                context,
+                callback.message,
+                version,
+                user_id=callback.from_user.id,
             )
 
     @router.callback_query(F.data.startswith("food:"))
@@ -1946,7 +2112,7 @@ def create_router(context: BotContext) -> Router:
             await callback.message.answer("메뉴 정보를 저장하지 않았습니다.")
 
     @router.message(F.text)
-    async def custom_portion(message: Message) -> None:
+    async def text_input(message: Message) -> None:
         if not message.from_user:
             return
         if (message.text or "").startswith("/"):
@@ -1961,6 +2127,16 @@ def create_router(context: BotContext) -> Router:
             )
             return
         if message.from_user.id not in pending_portions:
+            if any(
+                draft.user_id == message.from_user.id
+                for draft in (*recipe_drafts.values(), *menu_drafts.values())
+            ):
+                return
+            async with context.sessions() as session:
+                job = await get_active_job(session, message.from_user.id)
+            if job is not None:
+                return
+            await process_saved_product_search(message, message.text or "")
             return
         try:
             portion = parse_portion(message.text or "")
@@ -2225,6 +2401,9 @@ def _candidate_from_recognition(
         basis_metric_unit=result.nutrition_basis.metric_unit,
         basis_count_amount=result.nutrition_basis.count_amount,
         basis_count_unit=result.nutrition_basis.count_unit,
+        search_concepts=result.search_concepts,
+        search_terms_ko=result.search_terms_ko,
+        search_terms_ja=result.search_terms_ja,
         estimated_values=result.estimated_values,
         source="ai_label",
         verified=True,
@@ -2263,6 +2442,21 @@ def _recognition_result_text(result: NutritionRecognition) -> str:
         package_details.append(f"{_fmt(candidate.piece_count)}개")
     if package_details:
         lines.append("포장 정보: " + " · ".join(package_details))
+
+    search_tags = [
+        term.term
+        for term in build_product_search_terms(
+            name=result.product_name,
+            brand=result.brand,
+            search_concepts=result.search_concepts,
+            search_terms_ko=result.search_terms_ko,
+            search_terms_ja=result.search_terms_ja,
+            product_source="ai_label",
+        )
+        if term.locale in {"ko", "ja"}
+    ][:8]
+    if search_tags:
+        lines.append("검색 태그: " + " · ".join(search_tags))
 
     warnings = recognition_warnings(result)
     if warnings:

@@ -23,6 +23,7 @@ from app.repository import (
     save_recipe_parse_cache,
     search_catalog_products,
     search_recipe_products,
+    search_saved_products,
     undo_last_intake,
 )
 from app.schemas import ProductCandidate
@@ -95,6 +96,84 @@ async def test_private_product_does_not_leak_to_other_user(sessions) -> None:
         assert await find_product_by_barcode(session, "8801234567890", 2) is None
         assert await get_product_version(session, private_version.id, 2) is None
         assert await get_product_version(session, private_version.id, 1) is not None
+
+
+async def test_saved_product_search_includes_own_and_public_but_not_other_private(
+    sessions,
+) -> None:
+    own_product = candidate("8800000000001").model_copy(
+        update={"name": "내 프로틴 쉐이크", "brand": "개인 브랜드", "source": "manual"}
+    )
+    public_product = candidate("8800000000002").model_copy(
+        update={"name": "공개 프로틴 바", "brand": "공식 브랜드", "source": "openfoodfacts"}
+    )
+    other_product = candidate("8800000000003").model_copy(
+        update={"name": "남의 프로틴 음료", "brand": "비공개 브랜드", "source": "manual"}
+    )
+
+    async with sessions() as session:
+        await ensure_user(session, 1, "Asia/Seoul")
+        await ensure_user(session, 2, "Asia/Seoul")
+        own_version = await create_product_version(session, own_product, owner_id=1)
+        public_version = await create_product_version(session, public_product, owner_id=None)
+        other_version = await create_product_version(session, other_product, owner_id=2)
+        await session.commit()
+
+        results = await search_saved_products(session, owner_id=1, query="프로틴")
+        japanese_results = await search_saved_products(session, owner_id=1, query="プロテイン")
+        brand_results = await search_saved_products(session, owner_id=1, query="공식 브랜드")
+
+    result_ids = {item.id for item in results}
+    assert own_version.id in result_ids
+    assert public_version.id in result_ids
+    assert other_version.id not in result_ids
+    assert {item.id for item in japanese_results} == {own_version.id, public_version.id}
+    assert [item.id for item in brand_results] == [public_version.id]
+
+
+async def test_saved_product_search_matches_korean_alias_for_japanese_product(sessions) -> None:
+    japanese_product = candidate("4900000000001").model_copy(
+        update={
+            "name": "ゆで卵",
+            "label_language": "ja",
+            "source": "ai_label",
+        }
+    )
+
+    async with sessions() as session:
+        await ensure_user(session, 1, "Asia/Seoul")
+        version = await create_product_version(session, japanese_product, owner_id=1)
+        await session.commit()
+        results = await search_saved_products(session, owner_id=1, query="계란")
+
+    assert [item.id for item in results] == [version.id]
+    assert any(term.term == "계란" for term in results[0].product.search_terms)
+
+
+async def test_saved_product_search_requires_all_tag_words(sessions) -> None:
+    sugar_free_coffee = candidate("8800000000011").model_copy(
+        update={
+            "name": "상품 A",
+            "search_concepts": ["coffee", "sugar_free"],
+            "source": "ai_label",
+        }
+    )
+    regular_coffee = candidate("8800000000012").model_copy(
+        update={
+            "name": "상품 B",
+            "search_concepts": ["coffee"],
+            "source": "ai_label",
+        }
+    )
+
+    async with sessions() as session:
+        await ensure_user(session, 1, "Asia/Seoul")
+        matching = await create_product_version(session, sugar_free_coffee, owner_id=1)
+        await create_product_version(session, regular_coffee, owner_id=1)
+        await session.commit()
+        results = await search_saved_products(session, owner_id=1, query="무설탕 커피")
+
+    assert [item.id for item in results] == [matching.id]
 
 
 async def test_country_label_metadata_is_persisted(sessions) -> None:

@@ -9,6 +9,7 @@ from typing import Any
 from openai import AsyncOpenAI
 
 from app.schemas import NutritionRecognition
+from app.search_tags import SEARCH_CONCEPT_KEYS
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +115,21 @@ NUTRITION_JSON_SCHEMA: dict[str, Any] = {
             "type": ["number", "null"],
             "exclusiveMinimum": 0,
         },
+        "search_concepts": {
+            "type": "array",
+            "items": {"type": "string", "enum": list(SEARCH_CONCEPT_KEYS)},
+            "maxItems": 8,
+        },
+        "search_terms_ko": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1, "maxLength": 32},
+            "maxItems": 4,
+        },
+        "search_terms_ja": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1, "maxLength": 32},
+            "maxItems": 4,
+        },
         "evidence_text": {
             "type": "array",
             "items": {"type": "string"},
@@ -134,6 +150,9 @@ NUTRITION_JSON_SCHEMA: dict[str, Any] = {
         "package_amount",
         "servings_per_package",
         "piece_count",
+        "search_concepts",
+        "search_terms_ko",
+        "search_terms_ja",
         "evidence_text",
         "estimated_values",
         "confidence",
@@ -168,6 +187,13 @@ PROMPT = (
     "- 예를 들어 '총 6개입'은 piece_count=6이며, 추정한 개수는 입력하지 않습니다.\n"
     "- '추정치', '推定値', '目安'가 영양값에 적용되면 estimated_values=true로 "
     "반환합니다.\n"
+    "- 검색용 search_concepts는 제품명·종류·맛·주재료 또는 포장지의 명시적 표현으로 "
+    f"확인되는 경우에만 다음 목록에서 최대 8개를 고릅니다: {', '.join(SEARCH_CONCEPT_KEYS)}.\n"
+    "- search_terms_ko와 search_terms_ja에는 같은 제품을 한국어와 일본어로 찾을 때 유용한 "
+    "짧은 종류·주재료·맛 표현만 각각 최대 4개를 넣습니다. 브랜드명 전체를 반복하거나 URL, "
+    "문장, 광고 문구를 넣지 않습니다.\n"
+    "- 다이어트식·건강식·질병 적합성은 추정하지 않습니다. 무설탕·고단백·디카페인 같은 "
+    "속성은 포장지에 명시된 경우에만 태그로 반환합니다.\n"
     "- 숫자를 추정하거나 일반 상식으로 보완하지 않습니다.\n"
     "- 불명확한 글자는 evidence_text에 그대로 적고 confidence를 낮춥니다.\n"
     "- 표시 기준과 kcal, 탄수화물, 단백질, 지방을 모두 같은 기준으로 읽을 수 있을 때만 "

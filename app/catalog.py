@@ -34,6 +34,8 @@ class OpenFoodFactsCatalog:
                 "product_name_ko",
                 "product_name_ja",
                 "brands",
+                "categories",
+                "categories_tags",
                 "nutriments",
                 "nutrition_data_per",
                 "quantity",
@@ -103,11 +105,21 @@ class OpenFoodFactsCatalog:
             label_language="ko" if korean_name else "ja" if japanese_name else "unknown",
             basis_metric_amount=Decimal("100"),
             basis_metric_unit=basis_unit,
+            search_terms_ko=[" ".join(korean_name.split())]
+            if isinstance(korean_name, str) and korean_name.strip()
+            else [],
+            search_terms_ja=[" ".join(japanese_name.split())]
+            if isinstance(japanese_name, str) and japanese_name.strip()
+            else [],
             source="open_food_facts",
             verified=False,
             raw_data={
                 "nutrition_data_per": product.get("nutrition_data_per"),
                 "quantity": quantity,
+                "product_name_ko": korean_name,
+                "product_name_ja": japanese_name,
+                "categories": product.get("categories"),
+                "categories_tags": product.get("categories_tags"),
                 "nutriments": nutrients,
             },
         )
