@@ -15,6 +15,7 @@ def test_ai_json_schema_requires_every_top_level_field() -> None:
 def test_recognition_parses_expected_json() -> None:
     payload = """{
       "label_found": true,
+      "product_name_found": true,
       "label_market": "KR",
       "label_language": "ko",
       "product_name": "닭가슴살",
@@ -52,6 +53,7 @@ def test_recognition_parses_expected_json() -> None:
     result = NutritionRecognition.model_validate_json(payload)
 
     assert result.label_found is True
+    assert result.product_name_found is True
     assert result.product_name == "닭가슴살"
     assert result.nutrients.protein_g == 25
     assert result.piece_count == 1

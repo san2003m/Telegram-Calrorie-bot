@@ -3,9 +3,10 @@
 [한국어](README.md) | **English**
 
 A personal-first Telegram bot for tracking calories and macros in packaged and general foods. Send a
-barcode to reuse a saved product. For products the bot has not seen before, it uses an OpenAI
-vision model to read photos of the product front and nutrition label. AI-extracted data is only
-recorded and cached after the user reviews it.
+barcode to reuse a saved product. For products the bot has not seen before, it reuses the first
+barcode photo to identify the product and nutrition facts with an OpenAI vision model, requesting
+only the missing package view when necessary. AI-extracted data is recorded and cached only after
+the user reviews it.
 
 ## Features
 
@@ -37,8 +38,8 @@ Telegram photo
       ├─ Found in local DB ─────────────> Choose amount → Save entry
       ├─ Found in Open Food Facts ──────> Cache in DB → Choose amount → Save entry
       └─ Unknown product
-          └─ Product front + nutrition label
-              └─ Structured extraction with OpenAI
+          └─ Analyze first photo → request only missing views
+              └─ Structured extraction from 1–3 photos with OpenAI
                   └─ User review → Private DB cache → Choose amount → Save entry
 
 Telegram /food name
@@ -231,15 +232,19 @@ docker compose cp bot:/data/logs ./calorie-logs
 | `/cancel` | Cancel an in-progress photo recognition or amount entry |
 | `/whoami` | Show your numeric Telegram user ID |
 
-Send photos in this order:
+Photo input works as follows:
 
-1. Photograph the barcode so that it fills most of the frame.
-2. If it is a new product, photograph the front with the product name and total quantity visible.
-3. Photograph the nutrition label with calories, carbohydrates, protein, fat, sodium or
-   `食塩相当量`, and the declared measurement basis visible.
-4. Review the detected market, original basis text, total quantity, and extracted values. If the
+1. Keep the barcode sharp, but do not fill the entire frame with it. Include the product name or
+   nutrition label in the first photo when practical.
+2. For a new product, the bot checks that same photo for the name, total quantity, and nutrition
+   facts instead of discarding it.
+3. If the photo is sufficient, the bot immediately shows the review screen. Otherwise it asks only
+   for the missing product-front or nutrition-label view.
+4. You may also send up to three package views at once as a Telegram album. The nutrition photo
+   must clearly show calories, carbohydrates, protein, fat, and the declared measurement basis.
+5. Review the detected market, original basis text, total quantity, and extracted values. If the
    market is wrong, select `🇰🇷 한국` or `🇯🇵 일본` before saving.
-5. Choose the whole package, half, or one serving, or enter the actual amount consumed.
+6. Choose the whole package, half, or one serving, or enter the actual amount consumed.
 
 Custom input supports forms such as `45g`, `250ml`, `2개` (two items), `0.5봉` (half a package),
 `70%`, and `절반` (half), as well as Japanese forms including `2個`, `1本`, `0.5袋`, `1食分`,
@@ -291,8 +296,9 @@ Regulations can change, so recheck the latest standards before operating a publi
 The implementation uses image input and strict JSON Schema output through the OpenAI Responses
 API.
 
-- Product-front photos use `detail=low` because they are used mainly to identify the product name
-- Nutrition-label photos use `detail=original` to preserve small text
+- The first unknown-barcode photo is reused immediately instead of being discarded
+- One request can combine one to three photos regardless of their order
+- Every photo uses `detail=original` because any package view may contain small nutrition text
 - Images are resized to a maximum long edge of 1,800 px, with EXIF data and metadata removed
 - Responses are sent with `store=false`
 - The model returns calories, macros, and the measurement basis as constrained JSON rather than
@@ -303,6 +309,8 @@ API.
 - The bot warns about numerical inconsistencies or low confidence and always requires user review
 - Confirmed results are stored in the database, so the same barcode does not trigger another API
   request
+- A single photo completes recognition when both the product name and required nutrition values are
+  readable; otherwise the bot requests only the missing view
 - Structured recipe lines avoid OpenAI; free-form recipes make at most one model call per recipe
 - Recipe input is capped at 2,000 characters, 20 ingredients, and 800 output tokens
 - Per-user limits default to 10 calls per day, 100 per month, a 10-second cooldown, and one
@@ -338,8 +346,8 @@ real Telegram or OpenAI requests.
 
 ## Known limitations
 
-- A barcode does not contain nutrition facts, so a public database or photos of the packaging are
-  still required.
+- A barcode alone contains no nutrition data, so another package view is still required when the
+  first photo does not show a readable product name and nutrition label.
 - Coverage of Korean products in Open Food Facts is inconsistent.
 - General-food search requires an approved public-data API key in `MFDS_API_KEY`.
 - Piece and serving shortcuts are offered only when the official data provides conversion evidence.

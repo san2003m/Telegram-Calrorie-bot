@@ -454,6 +454,30 @@ async def _download_photo(bot: Bot, message: Message) -> bytes:
     return destination.getvalue()
 
 
+def _recognition_is_complete(result: NutritionRecognition) -> bool:
+    return result.product_name_found and result.label_found
+
+
+def _recognition_follow_up_text(result: NutritionRecognition) -> str:
+    if result.product_name_found and not result.label_found:
+        return (
+            f"제품명 ‘{result.product_name}’은 확인했습니다.\n"
+            "영양정보 표가 부족합니다. 표시 기준과 kcal·탄수화물·단백질·지방이 "
+            "선명하게 보이는 사진만 추가로 보내주세요."
+        )
+    if result.label_found and not result.product_name_found:
+        return (
+            "영양정보 표는 확인했습니다.\n"
+            "제품명을 읽지 못했습니다. 제품명과 브랜드가 선명하게 보이는 앞면 사진만 "
+            "추가로 보내주세요."
+        )
+    return (
+        "바코드 외에 제품명과 영양정보를 충분히 읽지 못했습니다.\n"
+        "제품 앞면과 영양정보 표를 각각 찍어 한 번에 앨범으로 보내거나, 앞면부터 "
+        "차례로 보내주세요."
+    )
+
+
 async def _clear_inline_keyboard(callback: CallbackQuery) -> None:
     if not callback.message:
         return
@@ -866,6 +890,48 @@ def create_router(context: BotContext) -> Router:
     menu_drafts: dict[str, MenuSearchDraft] = {}
     menu_ai_last_request: dict[int, float] = {}
     menu_locks: dict[int, asyncio.Lock] = {}
+    recognition_locks: dict[int, asyncio.Lock] = {}
+    photo_album_buffers: dict[tuple[int, str], list[tuple[Message, bytes]]] = {}
+    photo_album_tasks: dict[tuple[int, str], asyncio.Task[None]] = {}
+    photo_album_overflow: set[tuple[int, str]] = set()
+
+    async def process_photo_batch(message: Message, raw_images: list[bytes]) -> None:
+        user_id = message.from_user.id if message.from_user else 0
+        lock = recognition_locks.setdefault(user_id, asyncio.Lock())
+        async with lock:
+            async with context.sessions() as session:
+                await ensure_user(session, user_id, context.settings.app_timezone)
+                job = await get_active_job(session, user_id)
+                await session.commit()
+            if job is None:
+                await _handle_barcode_photos(context, message, raw_images)
+            else:
+                await _handle_job_photos(context, message, job.id, raw_images)
+
+    async def flush_photo_album(key: tuple[int, str]) -> None:
+        current_task = asyncio.current_task()
+        message: Message | None = None
+        try:
+            await asyncio.sleep(0.8)
+            items = photo_album_buffers.pop(key, [])
+            if not items:
+                return
+            message = items[-1][0]
+            if key in photo_album_overflow:
+                await message.answer("한 번에 최대 3장까지만 분석합니다. 앞의 3장을 사용합니다.")
+            await process_photo_batch(message, [raw for _, raw in items])
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.exception("Photo album processing failed")
+            items = photo_album_buffers.pop(key, [])
+            target = message or (items[-1][0] if items else None)
+            if target:
+                await target.answer("사진 묶음을 처리하지 못했습니다. 다시 시도해 주세요.")
+        finally:
+            photo_album_overflow.discard(key)
+            if photo_album_tasks.get(key) is current_task:
+                photo_album_tasks.pop(key, None)
 
     async def process_recipe_message(
         message: Message,
@@ -1059,10 +1125,13 @@ def create_router(context: BotContext) -> Router:
             await session.commit()
         await message.answer(
             "칼로리 기록 봇이 준비됐습니다.\n\n"
-            "1) 바코드를 크게 찍어 보내세요.\n"
-            "2) 처음 보는 제품이면 안내에 따라 앞면과 영양정보 표를 보내세요.\n"
-            "3) 일반 음식은 /food, 외식 메뉴는 /menu, 요리는 /recipe 로 기록할 수 있습니다.\n"
-            "4) 숫자를 확인한 뒤 기록 버튼을 누르세요.\n\n"
+            "1) 바코드는 선명하게 찍되 화면 가득 확대하지 말고, 가능하면 제품명이나 "
+            "영양정보 표도 함께 보이도록 사진을 보내세요.\n"
+            "2) 처음 보는 제품은 같은 사진에서 제품명과 영양정보까지 자동으로 확인합니다.\n"
+            "3) 정보가 부족할 때만 필요한 사진을 추가로 요청합니다. 여러 장은 앨범으로 "
+            "한 번에 보낼 수 있습니다.\n"
+            "4) 일반 음식은 /food, 외식 메뉴는 /menu, 요리는 /recipe 로 기록할 수 있습니다.\n"
+            "5) 숫자를 확인한 뒤 기록 버튼을 누르세요.\n\n"
             "명령어는 /help 에서 볼 수 있습니다."
         )
 
@@ -1083,6 +1152,9 @@ def create_router(context: BotContext) -> Router:
             "/manual 이름 | kcal | 탄수 | 단백질 | 지방 — 직접 기록\n"
             "/cancel — 진행 중인 입력 취소\n"
             "/whoami — 내 Telegram ID 확인\n\n"
+            "신규 제품일 수 있으니 첫 사진은 바코드만 화면 가득 찍기보다 제품명이나 영양표도 "
+            "함께 담아주세요. 봇이 같은 사진에서 제품명·영양표를 확인합니다. "
+            "사진이 더 필요하면 부족한 항목만 안내하며, 최대 3장을 앨범으로 보낼 수 있습니다.\n\n"
             "섭취량 입력 예: 45g, 250ml, 2개/2個, 1本, 0.5봉/0.5袋, "
             "70%, 절반/半分"
         )
@@ -1404,7 +1476,10 @@ def create_router(context: BotContext) -> Router:
             return
 
         await _begin_recognition_job(context, message.from_user.id, barcode)
-        await message.answer("처음 보는 제품입니다. 제품 앞면 사진을 보내주세요.")
+        await message.answer(
+            "처음 보는 제품입니다. 제품명과 영양정보 표가 함께 보이는 사진을 보내주세요.\n"
+            "서로 다른 면이라면 사진을 최대 3장까지 앨범으로 한 번에 보내도 됩니다."
+        )
 
     @router.message(Command("cancel"))
     async def cancel_command(message: Message) -> None:
@@ -1415,6 +1490,14 @@ def create_router(context: BotContext) -> Router:
         had_pending_recipe = message.from_user.id in pending_recipe_names
         pending_recipe_names.pop(message.from_user.id, None)
         removed_draft = False
+        removed_album = False
+        for key in [key for key in photo_album_buffers if key[0] == message.from_user.id]:
+            photo_album_buffers.pop(key, None)
+            photo_album_overflow.discard(key)
+            task = photo_album_tasks.pop(key, None)
+            if task:
+                task.cancel()
+            removed_album = True
         for draft_id, draft in list(recipe_drafts.items()):
             if draft.user_id == message.from_user.id:
                 recipe_drafts.pop(draft_id, None)
@@ -1433,7 +1516,7 @@ def create_router(context: BotContext) -> Router:
             remove_private_image(path)
         await message.answer(
             "진행 중인 입력을 취소했습니다."
-            if paths or had_pending_portion or had_pending_recipe or removed_draft
+            if paths or had_pending_portion or had_pending_recipe or removed_draft or removed_album
             else "진행 중인 입력이 없습니다."
         )
 
@@ -1444,15 +1527,21 @@ def create_router(context: BotContext) -> Router:
         raw = await _download_photo(bot, message)
         pending_portions.pop(message.from_user.id, None)
         pending_recipe_names.pop(message.from_user.id, None)
-        async with context.sessions() as session:
-            await ensure_user(session, message.from_user.id, context.settings.app_timezone)
-            job = await get_active_job(session, message.from_user.id)
-            await session.commit()
-
-        if job is None:
-            await _handle_barcode_photo(context, message, raw)
+        if message.media_group_id:
+            key = (message.from_user.id, str(message.media_group_id))
+            album = photo_album_buffers.setdefault(key, [])
+            if len(album) < 3:
+                album.append((message, raw))
+            else:
+                photo_album_overflow.add(key)
+            previous_task = photo_album_tasks.get(key)
+            if previous_task:
+                previous_task.cancel()
+            photo_album_tasks[key] = asyncio.create_task(
+                flush_photo_album(key), name=f"photo-album-{key[0]}-{key[1]}"
+            )
             return
-        await _handle_job_photo(context, message, job.id, raw)
+        await process_photo_batch(message, [raw])
 
     @router.callback_query(F.data.startswith("portion:"))
     async def select_portion(callback: CallbackQuery) -> None:
@@ -1921,11 +2010,18 @@ def create_router(context: BotContext) -> Router:
     return router
 
 
-async def _handle_barcode_photo(context: BotContext, message: Message, raw: bytes) -> None:
-    try:
-        barcodes = await asyncio.to_thread(decode_barcodes, raw)
-    except Exception:
-        barcodes = []
+async def _handle_barcode_photos(
+    context: BotContext, message: Message, raw_images: list[bytes]
+) -> None:
+    barcodes: list[str] = []
+    for raw in raw_images:
+        try:
+            detected = await asyncio.to_thread(decode_barcodes, raw)
+        except Exception:
+            detected = []
+        for barcode in detected:
+            if barcode not in barcodes:
+                barcodes.append(barcode)
     if not barcodes:
         await message.answer(
             "바코드를 읽지 못했습니다. 화면에 바코드가 크게 보이도록 다시 찍거나 "
@@ -1947,47 +2043,85 @@ async def _handle_barcode_photo(context: BotContext, message: Message, raw: byte
         await _offer_version(context, message, version)
         return
 
-    await _begin_recognition_job(context, message.from_user.id, barcode)
+    job = await _begin_recognition_job(context, message.from_user.id, barcode)
     await message.answer(
-        f"바코드 {barcode}는 처음 봅니다.\n제품 이름이 보이는 앞면 사진을 보내주세요."
+        f"바코드 {barcode}는 처음 봅니다. 같은 사진에서 제품명과 영양정보를 확인하는 중입니다."
     )
+    await _handle_job_photos(context, message, job.id, raw_images)
 
 
-async def _handle_job_photo(context: BotContext, message: Message, job_id: int, raw: bytes) -> None:
+def _unique_existing_paths(values: list[str | None]) -> list[Path]:
+    result: list[Path] = []
+    seen: set[str] = set()
+    for value in values:
+        if not value or value in seen:
+            continue
+        path = Path(value)
+        if path.exists():
+            result.append(path)
+            seen.add(value)
+    return result
+
+
+def _store_job_paths(job: RecognitionJob, paths: list[Path]) -> None:
+    retained = paths[-2:]
+    job.front_path = str(retained[0]) if retained else None
+    job.label_path = str(retained[1]) if len(retained) > 1 else None
+
+
+def _remove_paths(paths: list[Path]) -> None:
+    for path in paths:
+        remove_private_image(str(path))
+
+
+async def _prepare_recognition_images(
+    context: BotContext, user_id: int, raw_images: list[bytes]
+) -> list[Path]:
+    paths: list[Path] = []
     try:
-        processed = await asyncio.to_thread(preprocess_image, raw)
+        for raw in raw_images[:3]:
+            processed = await asyncio.to_thread(preprocess_image, raw)
+            image_path = context.settings.uploads_dir / f"{user_id}-{uuid4().hex}.jpg"
+            await asyncio.to_thread(write_private_image, image_path, processed)
+            paths.append(image_path)
+    except Exception:
+        _remove_paths(paths)
+        raise
+    return paths
+
+
+async def _handle_job_photos(
+    context: BotContext,
+    message: Message,
+    job_id: int,
+    raw_images: list[bytes],
+) -> None:
+    try:
+        new_paths = await _prepare_recognition_images(context, message.from_user.id, raw_images)
     except Exception:
         await message.answer("이미지를 처리하지 못했습니다. JPG/PNG 사진으로 다시 보내주세요.")
         return
-    image_path = context.settings.uploads_dir / f"{message.from_user.id}-{uuid4().hex}.jpg"
-    await asyncio.to_thread(write_private_image, image_path, processed)
 
-    front_path: Path | None = None
-    label_path: Path | None = None
+    selected_paths: list[Path] = []
+    dropped_paths: list[Path] = []
     async with context.sessions() as session:
         job = await session.get(RecognitionJob, job_id)
         if job is None or job.user_telegram_id != message.from_user.id:
-            remove_private_image(str(image_path))
+            _remove_paths(new_paths)
             await message.answer("인식 요청이 만료되었습니다. 바코드부터 다시 보내주세요.")
             return
-        if job.state == "awaiting_front":
-            job.front_path = str(image_path)
-            job.state = "awaiting_label"
-            await session.commit()
-            await message.answer(
-                "앞면을 저장했습니다. 이제 열량·탄수화물·단백질·지방과 "
-                "나트륨 또는 食塩相当量이 보이도록 영양정보 표를 가까이 찍어 보내주세요."
-            )
-            return
-        if job.state != "awaiting_label" or not job.front_path:
-            remove_private_image(str(image_path))
+        if job.state not in {"awaiting_front", "awaiting_label"}:
+            _remove_paths(new_paths)
             await message.answer("현재 사진을 받을 단계가 아닙니다. /cancel 후 다시 시작해 주세요.")
             return
-        job.label_path = str(image_path)
+        existing_paths = _unique_existing_paths([job.front_path, job.label_path])
+        all_paths = existing_paths + new_paths
+        selected_paths = all_paths[-3:]
+        dropped_paths = [path for path in all_paths if path not in selected_paths]
+        _store_job_paths(job, selected_paths)
         job.state = "processing"
-        front_path = Path(job.front_path)
-        label_path = image_path
         await session.commit()
+    _remove_paths(dropped_paths)
 
     if context.recognizer is None:
         async with context.sessions() as session:
@@ -1996,45 +2130,63 @@ async def _handle_job_photo(context: BotContext, message: Message, job_id: int, 
                 job.state = "error"
                 job.error = "OPENAI_API_KEY is not configured"
             await session.commit()
-        remove_private_image(str(front_path))
-        remove_private_image(str(label_path))
+        _remove_paths(selected_paths)
         await message.answer(
             "사진은 받았지만 OPENAI_API_KEY가 설정되지 않았습니다. "
             ".env에 키를 넣고 재시작하거나 /manual 로 기록하세요."
         )
         return
 
-    await message.answer("영양정보를 읽는 중입니다. 잠시만 기다려 주세요.")
+    await message.answer(
+        f"사진 {len(selected_paths)}장에서 제품명과 영양정보를 읽는 중입니다. 잠시만 기다려 주세요."
+    )
     try:
-        result = await context.recognizer.recognize(front_path, label_path)
-        if not result.label_found:
-            raise ValueError("영양정보 표를 확실히 읽지 못했습니다.")
+        result = await context.recognizer.recognize_images(selected_paths)
     except Exception as exc:
         async with context.sessions() as session:
             job = await session.get(RecognitionJob, job_id)
-            if job:
+            if job and job.state != "canceled":
                 job.state = "error"
                 job.error = f"{type(exc).__name__}: {str(exc)[:400]}"
             await session.commit()
-        remove_private_image(str(front_path))
-        remove_private_image(str(label_path))
+        _remove_paths(selected_paths)
         await message.answer(
             "영양정보를 확실히 읽지 못했습니다. /barcode로 다시 시작해 표를 더 가까이 "
             "찍거나 /manual 로 입력해 주세요."
         )
         return
 
+    if _recognition_is_complete(result):
+        async with context.sessions() as session:
+            job = await session.get(RecognitionJob, job_id)
+            if job is None or job.state == "canceled":
+                _remove_paths(selected_paths)
+                return
+            job.result_json = result.model_dump(mode="json")
+            job.state = "awaiting_confirm"
+            job.front_path = None
+            job.label_path = None
+            await session.commit()
+        _remove_paths(selected_paths)
+        await message.answer(
+            _recognition_result_text(result),
+            reply_markup=_confirmation_keyboard(job_id, result.label_market),
+        )
+        return
+
+    retained_paths = selected_paths[-2:] if result.product_name_found or result.label_found else []
     async with context.sessions() as session:
         job = await session.get(RecognitionJob, job_id)
-        if job is None:
+        if job is None or job.state == "canceled":
+            _remove_paths(selected_paths)
             return
-        job.result_json = result.model_dump(mode="json")
-        job.state = "awaiting_confirm"
+        job.result_json = None
+        job.error = None
+        job.state = "awaiting_label" if result.product_name_found else "awaiting_front"
+        _store_job_paths(job, retained_paths)
         await session.commit()
-    await message.answer(
-        _recognition_result_text(result),
-        reply_markup=_confirmation_keyboard(job_id, result.label_market),
-    )
+    _remove_paths([path for path in selected_paths if path not in retained_paths])
+    await message.answer(_recognition_follow_up_text(result))
 
 
 def _candidate_from_recognition(

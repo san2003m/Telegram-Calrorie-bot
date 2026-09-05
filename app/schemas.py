@@ -39,6 +39,7 @@ class Nutrients(StrictModel):
 
 class NutritionRecognition(StrictModel):
     label_found: bool
+    product_name_found: bool = True
     label_market: Literal["KR", "JP", "UNKNOWN"] = "UNKNOWN"
     label_language: Literal["ko", "ja", "mixed", "unknown"] = "unknown"
     product_name: str = Field(min_length=1, max_length=240)

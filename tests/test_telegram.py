@@ -15,6 +15,8 @@ from app.telegram import (
     _menu_candidate,
     _product_text,
     _recipe_candidate,
+    _recognition_follow_up_text,
+    _recognition_is_complete,
     _recognition_result_text,
     _stored_quick_portions,
 )
@@ -117,6 +119,71 @@ def test_small_salt_value_keeps_required_precision() -> None:
     )
 
     assert "식염상당량 0.02 g" in _recognition_result_text(result)
+
+
+def test_single_photo_can_complete_product_recognition() -> None:
+    result = NutritionRecognition(
+        label_found=True,
+        product_name_found=True,
+        label_market="KR",
+        label_language="ko",
+        product_name="한 장 인식 제품",
+        nutrition_basis=NutritionBasis(amount=Decimal("100"), unit="g"),
+        nutrients=Nutrients(
+            energy_kcal=Decimal("120"),
+            carbs_g=Decimal("10"),
+            protein_g=Decimal("5"),
+            fat_g=Decimal("6"),
+        ),
+        confidence=Decimal("0.9"),
+    )
+
+    assert _recognition_is_complete(result) is True
+
+
+def test_recognition_requests_only_the_missing_label_photo() -> None:
+    result = NutritionRecognition(
+        label_found=False,
+        product_name_found=True,
+        product_name="제품명만 보이는 상품",
+        nutrition_basis=NutritionBasis(amount=Decimal("1"), unit="serving"),
+        nutrients=Nutrients(
+            energy_kcal=Decimal("0"),
+            carbs_g=Decimal("0"),
+            protein_g=Decimal("0"),
+            fat_g=Decimal("0"),
+        ),
+        confidence=Decimal("0.6"),
+    )
+
+    follow_up = _recognition_follow_up_text(result)
+
+    assert _recognition_is_complete(result) is False
+    assert "제품명" in follow_up
+    assert "영양정보 표" in follow_up
+    assert "앞면 사진" not in follow_up
+
+
+def test_recognition_requests_only_the_missing_front_photo() -> None:
+    result = NutritionRecognition(
+        label_found=True,
+        product_name_found=False,
+        product_name="확인 불가",
+        nutrition_basis=NutritionBasis(amount=Decimal("100"), unit="g"),
+        nutrients=Nutrients(
+            energy_kcal=Decimal("120"),
+            carbs_g=Decimal("10"),
+            protein_g=Decimal("5"),
+            fat_g=Decimal("6"),
+        ),
+        confidence=Decimal("0.6"),
+    )
+
+    follow_up = _recognition_follow_up_text(result)
+
+    assert _recognition_is_complete(result) is False
+    assert "영양정보 표는 확인" in follow_up
+    assert "앞면 사진" in follow_up
 
 
 def test_mfds_piece_shortcuts_use_metric_reference() -> None:

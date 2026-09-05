@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import logging
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,7 @@ NUTRITION_JSON_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
     "properties": {
         "label_found": {"type": "boolean"},
+        "product_name_found": {"type": "boolean"},
         "label_market": {"type": "string", "enum": ["KR", "JP", "UNKNOWN"]},
         "label_language": {
             "type": "string",
@@ -122,6 +124,7 @@ NUTRITION_JSON_SCHEMA: dict[str, Any] = {
     },
     "required": [
         "label_found",
+        "product_name_found",
         "label_market",
         "label_language",
         "product_name",
@@ -139,8 +142,12 @@ NUTRITION_JSON_SCHEMA: dict[str, Any] = {
 
 
 PROMPT = (
-    "두 포장식품 사진을 읽어 한국 또는 일본 영양정보를 구조화하세요.\n"
-    "첫 사진은 제품 앞면, 둘째 사진은 영양정보 표입니다.\n"
+    "포장식품 사진 1~3장을 함께 읽어 제품명과 한국 또는 일본 영양정보를 구조화하세요.\n"
+    "사진의 순서는 정해져 있지 않으며, 한 사진에 바코드·제품명·영양정보가 모두 있을 수도 "
+    "있습니다. 여러 사진에 나뉜 정보는 하나의 제품 정보로 합치세요.\n"
+    "- 제품명이나 브랜드가 사진에서 명확히 보이면 product_name_found=true로 반환합니다. "
+    "제품명을 확인할 수 없으면 product_name_found=false, product_name='확인 불가', brand=null로 "
+    "반환합니다.\n"
     "- 표시 언어와 형식으로 label_market을 KR, JP, UNKNOWN 중에서 판별합니다. "
     "바코드 접두어만으로 국가를 판별하지 않습니다.\n"
     "- 한국 표시는 나트륨(mg), 일본 표시는 주로 食塩相当量(g)을 사용합니다. "
@@ -163,7 +170,9 @@ PROMPT = (
     "반환합니다.\n"
     "- 숫자를 추정하거나 일반 상식으로 보완하지 않습니다.\n"
     "- 불명확한 글자는 evidence_text에 그대로 적고 confidence를 낮춥니다.\n"
-    "- 영양정보 표를 읽을 수 없으면 label_found=false, 수치는 0으로 반환합니다.\n"
+    "- 표시 기준과 kcal, 탄수화물, 단백질, 지방을 모두 같은 기준으로 읽을 수 있을 때만 "
+    "label_found=true로 반환합니다. 영양정보 표를 충분히 읽을 수 없으면 label_found=false, "
+    "nutrition_basis는 1 serving, 수치는 0으로 반환합니다.\n"
 )
 
 
@@ -177,7 +186,19 @@ class NutritionRecognizer:
         encoded = base64.b64encode(path.read_bytes()).decode("ascii")
         return f"data:image/jpeg;base64,{encoded}"
 
-    async def recognize(self, front_path: Path, label_path: Path) -> NutritionRecognition:
+    async def recognize_images(self, image_paths: Sequence[Path]) -> NutritionRecognition:
+        paths = list(image_paths)
+        if not 1 <= len(paths) <= 3:
+            raise ValueError("영양정보 인식에는 사진을 1~3장 전달해야 합니다.")
+        content: list[dict[str, str]] = [{"type": "input_text", "text": PROMPT}]
+        content.extend(
+            {
+                "type": "input_image",
+                "image_url": self._data_url(path),
+                "detail": "original",
+            }
+            for path in paths
+        )
         response = await self.client.responses.create(
             model=self.model,
             store=False,
@@ -190,19 +211,7 @@ class NutritionRecognizer:
             input=[
                 {
                     "role": "user",
-                    "content": [
-                        {"type": "input_text", "text": PROMPT},
-                        {
-                            "type": "input_image",
-                            "image_url": self._data_url(front_path),
-                            "detail": "low",
-                        },
-                        {
-                            "type": "input_image",
-                            "image_url": self._data_url(label_path),
-                            "detail": "original",
-                        },
-                    ],
+                    "content": content,
                 }
             ],
             text={
@@ -225,3 +234,6 @@ class NutritionRecognizer:
         if not response.output_text:
             raise RuntimeError("AI가 영양정보 결과를 반환하지 않았습니다.")
         return NutritionRecognition.model_validate_json(response.output_text)
+
+    async def recognize(self, front_path: Path, label_path: Path) -> NutritionRecognition:
+        return await self.recognize_images([front_path, label_path])
