@@ -1,16 +1,21 @@
 from decimal import Decimal
 from types import SimpleNamespace
 
+from app.food_estimate_ai import FoodEstimatePlan
 from app.menu_ai import MenuNutritionEvidence
 from app.nutrition import MacroTotals
 from app.portion import ParsedPortion
 from app.recipe import RecipeDraft, ResolvedRecipeIngredient
-from app.schemas import Nutrients, NutritionBasis, NutritionRecognition
+from app.schemas import Nutrients, NutritionBasis, NutritionRecognition, RecipeIngredientInput
 from app.telegram import (
+    FoodEstimateDraft,
     MenuSearchDraft,
     _can_correct_basis_unit,
     _candidate_from_recognition,
     _candidate_with_basis_unit,
+    _food_estimate_candidate,
+    _food_estimate_draft_text,
+    _food_results_keyboard,
     _format_uptime,
     _menu_candidate,
     _product_text,
@@ -424,3 +429,90 @@ def test_official_menu_source_is_visible_in_product_text() -> None:
     assert "출처: 테스트카페 공식 영양정보" in text
     assert "메뉴 단위: 1회분" in text
     assert "https://brand.example/menu/latte" in text
+
+
+def test_food_results_keyboard_offers_explicit_ai_fallback() -> None:
+    version = SimpleNamespace(
+        id=10,
+        product=SimpleNamespace(name="삶은 달걀"),
+        raw_data={},
+        basis_amount=Decimal("100"),
+        basis_unit="g",
+        kcal=Decimal("150"),
+    )
+
+    keyboard = _food_results_keyboard([version], "request123")
+
+    assert keyboard.inline_keyboard[0][0].callback_data == "food:10"
+    assert keyboard.inline_keyboard[-1][0].callback_data == "food_estimate_start:request123"
+
+
+def test_food_estimate_candidate_is_private_unverified_and_searchable_in_japanese() -> None:
+    totals = MacroTotals(
+        kcal=Decimal("600"),
+        carbs_g=Decimal("60"),
+        protein_g=Decimal("35"),
+        fat_g=Decimal("24"),
+    )
+    recipe = RecipeDraft(
+        draft_id="recipe",
+        user_id=1234,
+        input_hash="e" * 64,
+        name="케밥 랩",
+        servings=Decimal("1"),
+        used_ai=True,
+        ingredients=(
+            ResolvedRecipeIngredient(
+                input_name="닭고기",
+                matched_name="닭고기, 구운것",
+                amount=Decimal("100"),
+                unit="g",
+                multiplier=Decimal("1"),
+                version_id=10,
+                source="mfds_food_db",
+                totals=totals,
+            ),
+        ),
+        total=totals,
+    )
+    plan = FoodEstimatePlan(
+        supported=True,
+        reason=None,
+        dish_name="케밥 랩",
+        ingredients=[
+            RecipeIngredientInput(
+                raw_text="닭고기 100g",
+                name="닭고기",
+                amount=Decimal("100"),
+                unit="g",
+                preparation="cooked",
+            )
+        ],
+        assumptions=["보통 크기", "닭고기 기준"],
+        uncertainty_percent=Decimal("30"),
+        confidence=Decimal("0.7"),
+        search_terms_ko=["케밥 랩"],
+        search_terms_ja=["ケバブ"],
+    )
+    draft = FoodEstimateDraft(
+        draft_id="estimate",
+        user_id=1234,
+        query="ケバブ ラップ",
+        input_hash="e" * 64,
+        plan=plan,
+        recipe=recipe,
+        from_cache=False,
+    )
+
+    candidate = _food_estimate_candidate(draft)
+    text = _food_estimate_draft_text(draft)
+
+    assert candidate.external_source == "food_estimate"
+    assert candidate.external_id == f"1234:{'e' * 56}"
+    assert candidate.source == "food_estimate"
+    assert candidate.verified is False
+    assert candidate.estimated_values is True
+    assert candidate.search_terms_ja[0] == "ケバブ ラップ"
+    assert candidate.raw_data["food_estimate"]["assumptions"] == ["보통 크기", "닭고기 기준"]
+    assert "변동 참고 범위 420~780 kcal" in text
+    assert "OpenAI가 1인분 재료량만 가정" in text

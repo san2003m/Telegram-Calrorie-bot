@@ -236,6 +236,26 @@ async def test_external_catalog_food_is_cached_and_searchable(sessions) -> None:
     assert [result.id for result in search_results] == [first.id]
 
 
+async def test_recipe_ingredient_search_does_not_reuse_composite_estimates(sessions) -> None:
+    manual = candidate("8800000000101").model_copy(update={"name": "닭고기", "source": "manual"})
+    recipe = candidate("8800000000102").model_copy(
+        update={"name": "닭고기 스튜", "source": "recipe"}
+    )
+    estimate = candidate("8800000000103").model_copy(
+        update={"name": "닭고기 케밥", "source": "food_estimate"}
+    )
+    async with sessions() as session:
+        await ensure_user(session, 1, "Asia/Seoul")
+        manual_version = await create_product_version(session, manual, owner_id=1)
+        await create_product_version(session, recipe, owner_id=1)
+        await create_product_version(session, estimate, owner_id=1)
+        await session.commit()
+
+        results = await search_recipe_products(session, owner_id=1, terms=["닭고기"])
+
+    assert [item.id for item in results] == [manual_version.id]
+
+
 async def test_undo_marks_last_log_void(sessions) -> None:
     async with sessions() as session:
         user = await ensure_user(session, 1234, "Asia/Seoul")

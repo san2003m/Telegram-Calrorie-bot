@@ -12,7 +12,7 @@
 - 바코드 사진 또는 숫자 입력
 - 로컬 DB → Open Food Facts → AI 사진 인식 순서의 상품 조회
 - `/search 상품명` 또는 일반 텍스트로 상품명·브랜드·바코드·한일 관련 태그 검색
-- `/food 삶은 달걀` 형식의 식약처 일반 음식 검색과 검색 결과 캐시
+- `/food 삶은 달걀` 형식의 식약처 일반 음식 검색과, 결과가 맞지 않을 때 선택하는 AI 추정
 - `/menu 브랜드명 메뉴명 크기`로 외식 메뉴의 공식 영양정보 검색
 - `/recipe 김치볶음밥`으로 재료 합계와 1인분 칼로리·탄단지 계산
 - kcal, 탄수화물, 단백질, 지방 기록
@@ -47,7 +47,9 @@ Telegram /search 상품명 또는 대기 중 일반 텍스트
 
 Telegram /food 음식명
   └─ 로컬 캐시 → 식약처 식품영양성분DB
-      └─ 음식 선택 → 참고 1회분/개수 또는 직접 g 입력 → 기록
+      ├─ 음식 선택 → 참고 1회분/개수 또는 직접 g 입력 → 기록
+      └─ 원하는 결과 없음 → 사용자 승인 → AI가 일반 1인분 재료량 구성
+          └─ 식품 DB로 영양값 계산 → 가정·변동 범위 확인 → 개인 저장 → 기록
 
 Telegram /menu 브랜드명 메뉴명 크기
   └─ 저장된 공식 메뉴 → 없으면 제한된 OpenAI 웹 검색
@@ -71,7 +73,7 @@ Telegram /recipe 레시피명
 5. 로컬 개발 시 VS Code와 Python 3.11 이상
 
 OpenAI 키 없이도 봇 시작, 수동 기록, DB 조회와 줄 단위 레시피 입력은 됩니다. 처음 보는 상품의
-사진 인식, 자연어 레시피 해석, `/menu` 신규 검색만 비활성화됩니다. `MFDS_API_KEY`가 없으면
+사진 인식, 자연어 레시피 해석, `/food` AI 추정, `/menu` 신규 검색만 비활성화됩니다. `MFDS_API_KEY`가 없으면
 `/food`의 신규 검색과
 레시피의 신규 재료 검색이 비활성화됩니다. 이미 캐시된 일반 음식은 API 호출 없이 재사용됩니다.
 
@@ -96,12 +98,21 @@ OWNER_TELEGRAM_ID=123456789
 OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-5.6-terra
 OPENAI_RECIPE_MODEL=gpt-5.6-luna
+OPENAI_FOOD_ESTIMATE_MODEL=gpt-5.6-luna
 RECIPE_AI_DAILY_LIMIT=10
 RECIPE_AI_MONTHLY_LIMIT=100
 RECIPE_AI_MAX_INPUT_CHARS=2000
 RECIPE_AI_MAX_OUTPUT_TOKENS=800
 RECIPE_MAX_INGREDIENTS=20
 RECIPE_AI_COOLDOWN_SECONDS=10
+FOOD_ESTIMATE_AI_DAILY_LIMIT=5
+FOOD_ESTIMATE_AI_MONTHLY_LIMIT=50
+FOOD_ESTIMATE_AI_GLOBAL_DAILY_LIMIT=20
+FOOD_ESTIMATE_AI_GLOBAL_MONTHLY_LIMIT=200
+FOOD_ESTIMATE_AI_MAX_QUERY_CHARS=80
+FOOD_ESTIMATE_AI_MAX_OUTPUT_TOKENS=600
+FOOD_ESTIMATE_MAX_INGREDIENTS=12
+FOOD_ESTIMATE_AI_COOLDOWN_SECONDS=15
 MFDS_API_KEY=공공데이터포털-일반인증키
 MFDS_API_TIMEOUT_SECONDS=8
 DATABASE_URL=sqlite+aiosqlite:///./data/calorie_bot.db
@@ -255,7 +266,7 @@ ls -lh "${CALORIE_LOG_DIR:-./runtime/logs}"
 | `/undo` | 마지막 기록을 삭제하지 않고 취소 상태로 전환 |
 | `/goal` | `/goal 2000 250 130 60` (kcal·탄·단·지) |
 | `/search` | `/search 닭가슴살`처럼 저장된 상품 검색 |
-| `/food` | `/food 삶은 달걀`처럼 일반 음식 검색 |
+| `/food` | `/food 삶은 달걀`처럼 일반 음식 DB 검색, 필요할 때만 AI 추정 |
 | `/menu` | `/menu 스타벅스 카페 라떼 Tall`처럼 브랜드 공식 영양정보 검색 |
 | `/recipe` | `/recipe 김치볶음밥` 후 재료와 총 인분 입력 |
 | `/barcode` | `/barcode 8801234567890` |
@@ -299,6 +310,14 @@ Open Food Facts의 영양 기준이 `g`인데 실제 음료 포장은 `ml`인 �
 있으면 빠른 선택 버튼으로 표시하고, 근거가 없으면 임의로 개당 중량을 만들지 않고 `g` 직접
 입력을 사용합니다. 조리법·수분량·실제 크기에 따라 영양값이 달라질 수 있으므로 가장 가까운
 항목과 섭취량을 직접 확인해야 합니다.
+
+`케밥 랩`, `ケバブ ラップ`처럼 적당한 DB 결과가 없으면 결과 아래의 AI 추정 버튼을 직접 누를 수
+있습니다. AI는 웹을 검색하거나 칼로리를 임의로 작성하지 않고, 입력을 음식명으로만 취급해 일반적인
+1인분의 주요 재료와 `g`·`ml` 양을 구성합니다. 영양값과 탄단지는 기존 식품 DB를 매칭해 Python으로
+계산합니다. 고기 종류·크기·소스 양 같은 가정, 재료별 매칭, 중앙 추정치와 변동 참고 범위를 확인한
+뒤에만 개인 음식으로 저장됩니다. 같은 검색어는 이후 저장된 음식을 바로 불러와 AI를 호출하지
+않으며, 더 정확히 기록하려면 `/food 치킨 케밥 랩 큰 사이즈 소스 적게`처럼 특징을 포함하거나
+`/recipe`로 실제 재료량을 입력합니다.
 
 레시피는 `/recipe 레시피명`을 보낸 뒤 `밥 420g`, `김치 160g`, `달걀 2개`, `총 2인분`처럼
 한 줄씩 입력합니다. 이 형식은 OpenAI를 호출하지 않습니다. 자연어 문장은 OpenAI가 재료명·양·
@@ -347,6 +366,11 @@ Open Food Facts의 영양 기준이 `g`인데 실제 음료 포장은 `ml`인 �
 - 사용자별 하루 10회·월 100회·10초 쿨다운과 동시 요청 1개 제한
 - 같은 레시피 입력은 사용자별 해시 캐시를 재사용하고 실제 입출력 토큰을 DB에 기록
 - 레시피 AI에는 웹 검색·파일 검색·코드 실행 도구를 제공하지 않음
+- 일반 음식 AI 추정은 DB 검색 뒤 사용자가 버튼을 눌러야만 실행되며 자동 호출하지 않음
+- 추정 모델에는 웹·파일·코드 실행 도구를 제공하지 않고, 칼로리 계산이 아닌 1인분 재료 구성만 맡김
+- 음식명 80자·재료 12개·출력 600토큰 제한, 사용자별 하루 5회·월 50회·15초 쿨다운
+- 서비스 전체 하루 20회·월 200회 제한과 사용자별 동시 요청 1개 제한
+- 같은 입력의 성공·추정 불가 결과는 사용자별 해시 캐시로 재사용하고 토큰을 `ai_usage`에 기록
 - 외식 메뉴 검색은 저비용 모델·낮은 검색 컨텍스트·웹 검색 최대 1회·출력 900토큰으로 제한
 - 외식 메뉴 검색은 사용자별 하루 5회·월 50회, 서비스 전체 하루 20회·월 200회 제한
 - 사용자별 15초 쿨다운·동시 요청 1개 제한
@@ -354,15 +378,16 @@ Open Food Facts의 영양 기준이 `g`인데 실제 음료 포장은 `ml`인 �
 - 성공·실패 검색을 7일 캐시하고 실제 입출력 토큰을 기존 `ai_usage` 테이블에 별도 기록
 
 정확한 API 단가는 모델과 시점에 따라 바뀌므로 [OpenAI 가격 페이지](https://openai.com/api/pricing/)에서
-확인하세요. 사진 모델은 `OPENAI_MODEL`, 자연어 레시피 모델은 `OPENAI_RECIPE_MODEL`로 교체할 수
-있습니다. 관련 구현은
+확인하세요. 사진 모델은 `OPENAI_MODEL`, 자연어 레시피 모델은 `OPENAI_RECIPE_MODEL`, 일반 음식
+추정 모델은 `OPENAI_FOOD_ESTIMATE_MODEL`로 교체할 수 있습니다. 관련 구현은
 [Responses API 문서](https://developers.openai.com/api/reference/resources/responses/methods/create)와
 [이미지 입력 가이드](https://developers.openai.com/api/docs/guides/images-vision)를 기준으로 했습니다.
 
 ## 테스트와 품질 검사
 
 실제 Telegram/OpenAI 호출 없이 계산, 이미지 축소, AI JSON 검증, 한일 태그 정규화·교차 검색,
-레시피 파싱·한도·캐시, 공개 카탈로그 변환, 사용자 격리, 일일 합계, 취소를 검사합니다.
+레시피 파싱·한도·캐시, 일반 음식 추정 스키마·저장값·검색 태그, 공개 카탈로그 변환, 사용자 격리,
+일일 합계, 취소를 검사합니다.
 
 ```bash
 .venv/bin/ruff check .
@@ -378,6 +403,8 @@ Open Food Facts의 영양 기준이 `g`인데 실제 음료 포장은 `ml`인 �
 - 내장 한일 태그 사전에 없는 전문 식품명과 신조어는 상품명 또는 AI가 저장한 별칭이 필요합니다.
 - 식약처 일반 음식 검색에는 공공데이터포털 활용신청과 `MFDS_API_KEY`가 필요합니다.
 - 일반 음식의 1회분·개당 중량은 공식 응답에 환산 근거가 있을 때만 버튼으로 제공합니다.
+- 일반 음식 AI 추정은 대표적인 1인분 조합을 계산한 참고값입니다. 식당·크기·고기·소스에 따라
+  실제 열량이 변동 범위를 벗어날 수 있으므로 저장 전 가정과 재료 DB 매칭을 확인해야 합니다.
 - 레시피 계산은 입력량과 선택한 식품 DB 항목의 합계이며 조리 중 버린 기름·국물과 수분 변화는
   자동 보정하지 않습니다. 저장 전 재료별 DB 매칭을 확인해야 합니다.
 - AI OCR은 틀릴 수 있어 의료·치료 목적의 정밀 영양 관리에는 적합하지 않습니다.

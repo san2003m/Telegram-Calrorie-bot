@@ -13,7 +13,7 @@ the user reviews it.
 - Scan a barcode from a photo or enter its digits manually
 - Look up products in the local database, then Open Food Facts, then from photos with AI
 - Search saved products by name, brand, barcode, or Korean/Japanese related tags
-- Search general foods through MFDS with commands such as `/food 삶은 달걀` and cache results
+- Search general foods through MFDS and explicitly opt into an AI estimate when no result fits
 - Search official restaurant-menu nutrition with `/menu brand menu size`
 - Calculate recipe totals and per-serving calories and macros from ingredients with `/recipe`
 - Track calories, carbohydrates, protein, and fat
@@ -49,7 +49,9 @@ Telegram /search product name or plain text while idle
 
 Telegram /food name
   └─ Local cache → MFDS Food Nutrition Database
-      └─ Select food → Reference serving/piece or custom grams → Save entry
+      ├─ Select food → Reference serving/piece or custom grams → Save entry
+      └─ No suitable result → User approval → AI proposes a typical serving's ingredients
+          └─ Calculate from food DB → Review assumptions/range → Save privately → Save entry
 
 Telegram /menu brand menu size
   └─ Saved official menu → otherwise one limited OpenAI web search
@@ -74,8 +76,9 @@ users.
 5. VS Code and Python 3.11 or later for local development
 
 The bot can start, accept manual entries, query the database, and parse line-based recipes without
-an OpenAI key. Only unknown-product photo recognition, natural-language recipe extraction, and new
-`/menu` searches are disabled. Without `MFDS_API_KEY`, new `/food` and recipe-ingredient searches
+an OpenAI key. Only unknown-product photo recognition, natural-language recipe extraction,
+`/food` AI estimates, and new `/menu` searches are disabled. Without `MFDS_API_KEY`, new `/food`
+and recipe-ingredient searches
 are disabled, while
 previously cached foods remain reusable.
 
@@ -101,12 +104,21 @@ OWNER_TELEGRAM_ID=123456789
 OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-5.6-terra
 OPENAI_RECIPE_MODEL=gpt-5.6-luna
+OPENAI_FOOD_ESTIMATE_MODEL=gpt-5.6-luna
 RECIPE_AI_DAILY_LIMIT=10
 RECIPE_AI_MONTHLY_LIMIT=100
 RECIPE_AI_MAX_INPUT_CHARS=2000
 RECIPE_AI_MAX_OUTPUT_TOKENS=800
 RECIPE_MAX_INGREDIENTS=20
 RECIPE_AI_COOLDOWN_SECONDS=10
+FOOD_ESTIMATE_AI_DAILY_LIMIT=5
+FOOD_ESTIMATE_AI_MONTHLY_LIMIT=50
+FOOD_ESTIMATE_AI_GLOBAL_DAILY_LIMIT=20
+FOOD_ESTIMATE_AI_GLOBAL_MONTHLY_LIMIT=200
+FOOD_ESTIMATE_AI_MAX_QUERY_CHARS=80
+FOOD_ESTIMATE_AI_MAX_OUTPUT_TOKENS=600
+FOOD_ESTIMATE_MAX_INGREDIENTS=12
+FOOD_ESTIMATE_AI_COOLDOWN_SECONDS=15
 MFDS_API_KEY=your-data-go-kr-service-key
 MFDS_API_TIMEOUT_SECONDS=8
 DATABASE_URL=sqlite+aiosqlite:///./data/calorie_bot.db
@@ -265,7 +277,7 @@ ls -lh "${CALORIE_LOG_DIR:-./runtime/logs}"
 | `/undo` | Mark the latest entry as undone without deleting it |
 | `/goal` | `/goal 2000 250 130 60` (kcal, carbohydrates, protein, fat) |
 | `/search` | Search saved products, for example `/search 닭가슴살` |
-| `/food` | Search general foods, for example `/food 삶은 달걀` |
+| `/food` | Search the food DB and optionally estimate, for example `/food 삶은 달걀` |
 | `/menu` | Search official brand nutrition, for example `/menu Starbucks Cafe Latte Tall` |
 | `/recipe` | Send `/recipe 김치볶음밥`, then ingredients and total servings |
 | `/barcode` | `/barcode 8801234567890` |
@@ -313,6 +325,15 @@ up to five matches from the MFDS Food Nutrition Database. Selected records are c
 official food code. A reference-serving or piece button is shown only when the official response
 contains enough weight information for the conversion; otherwise the bot asks for grams instead
 of inventing a piece weight. Cooking method, moisture, and actual size can still change the result.
+
+For a dish such as `케밥 랩` or `ケバブ ラップ` with no suitable database match, explicitly press
+the AI-estimate button below the results. The model does not browse or invent nutrition numbers. It
+treats the input only as a dish name and proposes major ingredients with `g` or `ml` amounts for one
+typical serving; Python then calculates calories and macros from the existing food database. Review
+the meat, size, and sauce assumptions, every ingredient match, the central estimate, and its
+variation range before saving it as a private food. The same query then reuses the saved item without
+another AI call. Add distinguishing details to the `/food` query or enter actual amounts with
+`/recipe` when you need a more specific estimate.
 
 For a recipe, send `/recipe name`, then lines such as `rice 420g`, `kimchi 160g`, `egg 2개`, and
 `총 2인분`. This structured form does not call OpenAI. For free-form text, OpenAI extracts only
@@ -371,6 +392,13 @@ API.
   concurrent request
 - Identical recipe input reuses a per-user hash cache, and actual input/output token usage is stored
 - The recipe model receives no web, file, code-execution, or other tools
+- Generic-food estimation runs only after the user presses its button following database search
+- The estimate model receives no web, file, or code tools and proposes ingredients rather than
+  calculating nutrition itself
+- Defaults cap a dish name at 80 characters, ingredients at 12, output at 600 tokens, and each user
+  at 5 calls per day, 50 per month, a 15-second cooldown, and one concurrent request
+- Service-wide limits default to 20 calls per day and 200 per month
+- Successful and unsupported results reuse a per-user input-hash cache, with token usage tracked
 - Menu lookup uses a low-cost model, low search context, one web-search call, and 900 output tokens
 - Menu limits default to 5 calls per day and 50 per month per user, plus 20 per day and 200 per month
   for the whole service
@@ -381,17 +409,18 @@ API.
 
 API pricing changes by model and over time. Check the
 [OpenAI pricing page](https://openai.com/api/pricing/) for current rates. Select `OPENAI_MODEL` for
-label photos, `OPENAI_RECIPE_MODEL` for natural-language recipes, and `OPENAI_MENU_MODEL` for menu
-search. The implementation follows the
+label photos, `OPENAI_RECIPE_MODEL` for natural-language recipes,
+`OPENAI_FOOD_ESTIMATE_MODEL` for generic-food estimates, and `OPENAI_MENU_MODEL` for menu search.
+The implementation follows the
 [Responses API reference](https://developers.openai.com/api/reference/resources/responses/methods/create)
 and the [image input guide](https://developers.openai.com/api/docs/guides/images-vision).
 
 ## Tests and quality checks
 
 The test suite covers calculations, image resizing, AI JSON validation, Korean/Japanese tag
-normalization and cross-language search, recipe parsing, quotas and caching, public catalog
-conversion, user isolation, daily totals, and undo behavior without making real Telegram or OpenAI
-requests.
+normalization and cross-language search, recipe parsing, quotas and caching, generic-food estimate
+schemas, saved values and tags, public catalog conversion, user isolation, daily totals, and undo
+behavior without making real Telegram or OpenAI requests.
 
 ```bash
 .venv/bin/ruff check .
@@ -408,6 +437,8 @@ requests.
   a matching product name or an alias saved during AI recognition.
 - General-food search requires an approved public-data API key in `MFDS_API_KEY`.
 - Piece and serving shortcuts are offered only when the official data provides conversion evidence.
+- A generic-food AI estimate is a reference calculation for one typical serving. A restaurant's
+  size, meat, and sauce can fall outside the shown range, so review assumptions and DB matches.
 - Recipe totals add the entered amounts from the selected food records. They do not automatically
   account for discarded oil or broth, cooking loss, or moisture changes; review every match.
 - AI OCR can be wrong and is not appropriate for medical or therapeutic nutrition management.

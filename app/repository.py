@@ -220,7 +220,7 @@ async def search_recipe_products(
                 .options(joinedload(ProductVersion.product))
                 .where(
                     ProductVersion.is_current.is_(True),
-                    Product.source != "recipe",
+                    Product.source.notin_(("recipe", "food_estimate")),
                     or_(Product.owner_telegram_id.is_(None), Product.owner_telegram_id == owner_id),
                     or_(*name_filters),
                 )

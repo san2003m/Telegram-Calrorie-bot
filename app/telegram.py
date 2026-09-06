@@ -21,6 +21,15 @@ from app.ai_recognition import NutritionRecognizer
 from app.barcode import decode_barcodes, normalize_barcode
 from app.catalog import OpenFoodFactsCatalog
 from app.config import Settings
+from app.food_estimate_ai import (
+    FOOD_ESTIMATE_VERSION,
+    FoodEstimateError,
+    FoodEstimatePlan,
+    FoodEstimatePlanner,
+    food_estimate_query_hash,
+    is_usable_food_estimate,
+    normalize_food_estimate_query,
+)
 from app.image_tools import preprocess_image, remove_private_image, write_private_image
 from app.menu_ai import (
     MENU_SEARCH_VERSION,
@@ -90,12 +99,15 @@ from app.repository import (
 from app.schemas import NutritionRecognition, ProductCandidate, RecipeExtraction
 from app.search_tags import (
     build_product_search_terms,
+    detect_locale,
     matching_term,
     normalize_search_term,
     search_term_score,
 )
 
 logger = logging.getLogger(__name__)
+
+FOOD_ESTIMATE_REQUEST_TTL_SECONDS = 10 * 60
 
 
 @dataclass(frozen=True)
@@ -105,6 +117,7 @@ class BotContext:
     catalog: OpenFoodFactsCatalog
     food_catalog: MfdsFoodCatalog | None
     recognizer: NutritionRecognizer | None
+    food_estimator: FoodEstimatePlanner | None = None
     recipe_parser: RecipeAIParser | None = None
     menu_searcher: MenuNutritionSearcher | None = None
     started_at: float = field(default_factory=monotonic)
@@ -115,6 +128,33 @@ class PreparedRecipeExtraction:
     extraction: RecipeExtraction
     input_hash: str
     used_ai: bool
+    from_cache: bool
+
+
+@dataclass(frozen=True)
+class PreparedFoodEstimate:
+    plan: FoodEstimatePlan
+    input_hash: str
+    from_cache: bool
+
+
+@dataclass(frozen=True)
+class FoodEstimateRequest:
+    request_id: str
+    user_id: int
+    query: str
+    input_hash: str
+    created_at: float
+
+
+@dataclass(frozen=True)
+class FoodEstimateDraft:
+    draft_id: str
+    user_id: int
+    query: str
+    input_hash: str
+    plan: FoodEstimatePlan
+    recipe: RecipeDraft
     from_cache: bool
 
 
@@ -194,6 +234,8 @@ def _product_text(version) -> str:
     if getattr(version, "estimated_values", False):
         if version.source == "recipe":
             lines.append("참고: 재료 DB 매칭과 조리 전 입력량을 합산한 추정 영양정보")
+        elif version.source == "food_estimate":
+            lines.append("참고: AI가 가정한 일반적인 1인분 재료량으로 계산한 추정치")
         else:
             lines.append("참고: 포장지에서 추정치 또는 참고값으로 표시된 영양정보")
     if version.source == MFDS_SOURCE:
@@ -208,6 +250,8 @@ def _product_text(version) -> str:
             lines.append(source_url)
     elif version.source == "recipe":
         lines.append("출처: 사용자 레시피 · 재료 영양값은 저장된 식품 DB 기준")
+    elif version.source == "food_estimate":
+        lines.append("출처: AI 추정 재료 · 재료 영양값은 저장된 식품 DB 기준")
     package_details = []
     if version.package_amount is not None and version.package_unit:
         package_details.append(f"총 {_fmt(version.package_amount)} {version.package_unit}")
@@ -339,7 +383,10 @@ def _portion_keyboard(version, last_log: IntakeLog | None) -> InlineKeyboardMark
     )
 
 
-def _food_results_keyboard(versions: list) -> InlineKeyboardMarkup:
+def _food_results_keyboard(
+    versions: list,
+    estimate_request_id: str | None = None,
+) -> InlineKeyboardMarkup:
     rows = []
     for version in versions:
         raw_data = version.raw_data if isinstance(version.raw_data, dict) else {}
@@ -357,7 +404,29 @@ def _food_results_keyboard(versions: list) -> InlineKeyboardMarkup:
                 )
             ]
         )
+    if estimate_request_id:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="🤖 원하는 음식이 없나요? AI로 추정",
+                    callback_data=f"food_estimate_start:{estimate_request_id}",
+                )
+            ]
+        )
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _food_estimate_offer_keyboard(request_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🤖 일반적인 1인분으로 AI 추정",
+                    callback_data=f"food_estimate_start:{request_id}",
+                )
+            ]
+        ]
+    )
 
 
 def _search_key(value: str) -> str:
@@ -721,6 +790,93 @@ async def _prepare_recipe_extraction(
     )
 
 
+async def _prepare_food_estimate(
+    context: BotContext,
+    *,
+    user_id: int,
+    query: str,
+    last_ai_request: dict[int, float],
+) -> PreparedFoodEstimate:
+    input_hash = food_estimate_query_hash(query)
+    async with context.sessions() as session:
+        await ensure_user(session, user_id, context.settings.app_timezone)
+        cached = await get_recipe_parse_cache(
+            session,
+            user_id=user_id,
+            input_hash=input_hash,
+            parser_version=FOOD_ESTIMATE_VERSION,
+        )
+        await session.commit()
+    if cached is not None:
+        plan = FoodEstimatePlan.model_validate(cached.result_json)
+        if len(plan.ingredients) > context.settings.food_estimate_max_ingredients:
+            raise FoodEstimateError("저장된 추정 계획의 재료 수가 현재 제한을 초과합니다.")
+        return PreparedFoodEstimate(plan=plan, input_hash=input_hash, from_cache=True)
+
+    if context.food_estimator is None:
+        raise FoodEstimateError("일반 음식 AI 추정을 사용하려면 OPENAI_API_KEY가 필요합니다.")
+    elapsed = monotonic() - last_ai_request.get(user_id, -10_000)
+    cooldown = context.settings.food_estimate_ai_cooldown_seconds
+    if elapsed < cooldown:
+        raise FoodEstimateError(
+            f"AI 일반 음식 추정은 {cooldown - elapsed:.0f}초 뒤 다시 시도할 수 있습니다."
+        )
+
+    async with context.sessions() as session:
+        usage, limit_error = await reserve_ai_usage(
+            session,
+            user_id=user_id,
+            feature="food_estimate",
+            input_hash=input_hash,
+            timezone_name=context.settings.app_timezone,
+            daily_limit=context.settings.food_estimate_ai_daily_limit,
+            monthly_limit=context.settings.food_estimate_ai_monthly_limit,
+            feature_label="AI 일반 음식 추정",
+            global_daily_limit=context.settings.food_estimate_ai_global_daily_limit,
+            global_monthly_limit=context.settings.food_estimate_ai_global_monthly_limit,
+        )
+        await session.commit()
+    if usage is None:
+        raise FoodEstimateError(limit_error or "AI 일반 음식 추정 한도에 도달했습니다.")
+
+    last_ai_request[user_id] = monotonic()
+    try:
+        result = await context.food_estimator.estimate(query=query, user_id=user_id)
+    except Exception as exc:
+        logger.exception("OpenAI generic food estimate failed")
+        async with context.sessions() as session:
+            await finish_ai_usage(
+                session,
+                usage.id,
+                status="failed",
+                error=type(exc).__name__,
+            )
+            await session.commit()
+        raise FoodEstimateError(
+            "AI 일반 음식 추정에 실패했습니다. 잠시 후 다시 시도해 주세요."
+        ) from exc
+
+    async with context.sessions() as session:
+        await finish_ai_usage(
+            session,
+            usage.id,
+            status="completed",
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            total_tokens=result.total_tokens,
+        )
+        await save_recipe_parse_cache(
+            session,
+            user_id=user_id,
+            input_hash=input_hash,
+            parser_version=FOOD_ESTIMATE_VERSION,
+            result_json=result.plan.model_dump(mode="json"),
+            used_ai=True,
+        )
+        await session.commit()
+    return PreparedFoodEstimate(plan=result.plan, input_hash=input_hash, from_cache=False)
+
+
 async def _resolve_recipe(
     context: BotContext,
     *,
@@ -907,6 +1063,130 @@ def _recipe_candidate(draft: RecipeDraft) -> ProductCandidate:
     )
 
 
+def _food_estimate_draft_text(draft: FoodEstimateDraft) -> str:
+    plan = draft.plan
+    recipe = draft.recipe
+    uncertainty = (plan.uncertainty_percent or Decimal("50")) / Decimal("100")
+    low_kcal = max(Decimal("0"), recipe.per_serving.kcal * (Decimal("1") - uncertainty))
+    high_kcal = recipe.per_serving.kcal * (Decimal("1") + uncertainty)
+    if plan.confidence >= Decimal("0.75"):
+        confidence_label = "높음"
+    elif plan.confidence >= Decimal("0.5"):
+        confidence_label = "보통"
+    else:
+        confidence_label = "낮음"
+    analysis = (
+        "저장된 추정 계획 재사용 · OpenAI 호출 없음"
+        if draft.from_cache
+        else "OpenAI가 1인분 재료량만 가정 · 영양 계산은 Python"
+    )
+    lines = [f"🤖 {recipe.name} · AI 추정", analysis]
+    if plan.assumptions:
+        lines.extend(["", "가정", *(f"· {item}" for item in plan.assumptions)])
+    lines.extend(["", "재료 DB 매칭"])
+    for item in recipe.ingredients:
+        amount = display_recipe_amount(item.amount, item.unit)
+        lines.append(
+            f"· {item.input_name} {amount} → {item.matched_name} · {_fmt(item.totals.kcal)} kcal"
+        )
+    per_serving = recipe.per_serving
+    lines.extend(
+        [
+            "",
+            f"중앙 추정 {_fmt(per_serving.kcal)} kcal",
+            f"변동 참고 범위 {_fmt(low_kcal)}~{_fmt(high_kcal)} kcal",
+            f"탄 {_fmt(per_serving.carbs_g)} g · 단 {_fmt(per_serving.protein_g)} g · "
+            f"지 {_fmt(per_serving.fat_g)} g",
+            f"추정 신뢰도: {confidence_label}",
+            "",
+            "실제 크기·고기·소스에 따라 크게 달라질 수 있습니다. "
+            "재료 매칭과 가정을 확인한 뒤 저장해 주세요.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _food_estimate_confirmation_keyboard(draft_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="추정값 저장",
+                    callback_data=f"food_estimate_save:{draft_id}",
+                ),
+                InlineKeyboardButton(
+                    text="취소",
+                    callback_data=f"food_estimate_cancel:{draft_id}",
+                ),
+            ]
+        ]
+    )
+
+
+def _food_estimate_aliases(draft: FoodEstimateDraft) -> tuple[list[str], list[str]]:
+    ko = list(draft.plan.search_terms_ko)
+    ja = list(draft.plan.search_terms_ja)
+    if len(draft.query) <= 32:
+        locale = detect_locale(draft.query)
+        target = ko if locale == "ko" else ja if locale == "ja" else None
+        if target is not None and draft.query not in target:
+            target.insert(0, draft.query)
+    return list(dict.fromkeys(ko))[:4], list(dict.fromkeys(ja))[:4]
+
+
+def _food_estimate_candidate(draft: FoodEstimateDraft) -> ProductCandidate:
+    per_serving = draft.recipe.per_serving
+    ko_terms, ja_terms = _food_estimate_aliases(draft)
+    ingredients = [
+        {
+            "input_name": item.input_name,
+            "matched_name": item.matched_name,
+            "amount": str(item.amount),
+            "unit": item.unit,
+            "multiplier": str(item.multiplier),
+            "product_version_id": item.version_id,
+            "source": item.source,
+            "kcal": str(item.totals.kcal),
+            "carbs_g": str(item.totals.carbs_g),
+            "protein_g": str(item.totals.protein_g),
+            "fat_g": str(item.totals.fat_g),
+        }
+        for item in draft.recipe.ingredients
+    ]
+    raw_data: dict[str, object] = {
+        "food_estimate": {
+            "query": draft.query,
+            "estimator_version": FOOD_ESTIMATE_VERSION,
+            "confidence": str(draft.plan.confidence),
+            "uncertainty_percent": str(draft.plan.uncertainty_percent),
+            "assumptions": draft.plan.assumptions,
+            "ingredients": ingredients,
+        }
+    }
+    if ko_terms:
+        raw_data["product_name_ko"] = ko_terms[0]
+    if ja_terms:
+        raw_data["product_name_ja"] = ja_terms[0]
+    return ProductCandidate(
+        external_source="food_estimate",
+        external_id=f"{draft.user_id}:{draft.input_hash[:56]}",
+        name=draft.recipe.name,
+        basis_amount=Decimal("1"),
+        basis_unit="serving",
+        kcal=per_serving.kcal,
+        carbs_g=per_serving.carbs_g,
+        protein_g=per_serving.protein_g,
+        fat_g=per_serving.fat_g,
+        source="food_estimate",
+        verified=False,
+        estimated_values=True,
+        basis_text="AI 추정 일반 1인분",
+        raw_data=raw_data,
+        search_terms_ko=ko_terms,
+        search_terms_ja=ja_terms,
+    )
+
+
 def _menu_draft_text(draft: MenuSearchDraft) -> str:
     evidence = draft.evidence
     cache_text = "저장된 최근 검색 결과" if draft.from_cache else "방금 확인한 검색 결과"
@@ -983,10 +1263,34 @@ def create_router(context: BotContext) -> Router:
     menu_drafts: dict[str, MenuSearchDraft] = {}
     menu_ai_last_request: dict[int, float] = {}
     menu_locks: dict[int, asyncio.Lock] = {}
+    food_estimate_requests: dict[str, FoodEstimateRequest] = {}
+    food_estimate_drafts: dict[str, FoodEstimateDraft] = {}
+    food_estimate_ai_last_request: dict[int, float] = {}
+    food_estimate_locks: dict[int, asyncio.Lock] = {}
     recognition_locks: dict[int, asyncio.Lock] = {}
     photo_album_buffers: dict[tuple[int, str], list[tuple[Message, bytes]]] = {}
     photo_album_tasks: dict[tuple[int, str], asyncio.Task[None]] = {}
     photo_album_overflow: set[tuple[int, str]] = set()
+
+    def remember_food_estimate_request(*, user_id: int, query: str) -> str | None:
+        if context.food_estimator is None:
+            return None
+        now = monotonic()
+        for request_id, request in list(food_estimate_requests.items()):
+            if (
+                now - request.created_at > FOOD_ESTIMATE_REQUEST_TTL_SECONDS
+                or request.user_id == user_id
+            ):
+                food_estimate_requests.pop(request_id, None)
+        request_id = uuid4().hex[:12]
+        food_estimate_requests[request_id] = FoodEstimateRequest(
+            request_id=request_id,
+            user_id=user_id,
+            query=query,
+            input_hash=food_estimate_query_hash(query),
+            created_at=now,
+        )
+        return request_id
 
     async def process_photo_batch(message: Message, raw_images: list[bytes]) -> None:
         user_id = message.from_user.id if message.from_user else 0
@@ -1096,6 +1400,83 @@ def create_router(context: BotContext) -> Router:
         await message.answer(
             _recipe_draft_text(draft, from_cache=prepared.from_cache),
             reply_markup=_recipe_confirmation_keyboard(draft.draft_id),
+        )
+
+    async def process_food_estimate(
+        message: Message,
+        *,
+        user_id: int,
+        request: FoodEstimateRequest,
+    ) -> None:
+        lock = food_estimate_locks.setdefault(user_id, asyncio.Lock())
+        if lock.locked():
+            await message.answer("이미 이 음식을 AI로 추정 중입니다. 잠시만 기다려 주세요.")
+            return
+        await message.answer(
+            f"‘{request.query}’의 일반적인 1인분 재료량을 AI로 구성하고 "
+            "식품 DB로 계산합니다. 웹 검색은 하지 않습니다."
+        )
+        try:
+            async with lock:
+                prepared = await _prepare_food_estimate(
+                    context,
+                    user_id=user_id,
+                    query=request.query,
+                    last_ai_request=food_estimate_ai_last_request,
+                )
+                if prepared.input_hash != request.input_hash:
+                    raise FoodEstimateError(
+                        "추정 요청이 변경되었습니다. /food로 다시 검색해 주세요."
+                    )
+                if not is_usable_food_estimate(prepared.plan):
+                    reason = prepared.plan.reason or "음식명만으로 안전하게 추정하기 어렵습니다."
+                    raise FoodEstimateError(
+                        f"AI가 이 음식의 일반적인 재료량을 구성하지 못했습니다.\n{reason}"
+                    )
+                extraction = RecipeExtraction(
+                    recipe_name=prepared.plan.dish_name or request.query,
+                    servings=Decimal("1"),
+                    ingredients=prepared.plan.ingredients,
+                )
+                recipe = await _resolve_recipe(
+                    context,
+                    user_id=user_id,
+                    prepared=PreparedRecipeExtraction(
+                        extraction=extraction,
+                        input_hash=prepared.input_hash,
+                        used_ai=True,
+                        from_cache=prepared.from_cache,
+                    ),
+                )
+        except (FoodEstimateError, RecipeError) as exc:
+            await message.answer(
+                f"{exc}\n\n더 정확한 결과가 필요하면 고기 종류·크기·소스 양을 "
+                "포함해 `/food 음식명`으로 다시 검색하거나 /recipe로 재료를 직접 입력해 주세요."
+            )
+            return
+        except Exception:
+            logger.exception("Generic food estimate processing failed")
+            await message.answer(
+                "AI 일반 음식 추정을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요."
+            )
+            return
+
+        for draft_id, old_draft in list(food_estimate_drafts.items()):
+            if old_draft.user_id == user_id:
+                food_estimate_drafts.pop(draft_id, None)
+        draft = FoodEstimateDraft(
+            draft_id=uuid4().hex[:12],
+            user_id=user_id,
+            query=request.query,
+            input_hash=prepared.input_hash,
+            plan=prepared.plan,
+            recipe=recipe,
+            from_cache=prepared.from_cache,
+        )
+        food_estimate_drafts[draft.draft_id] = draft
+        await message.answer(
+            _food_estimate_draft_text(draft),
+            reply_markup=_food_estimate_confirmation_keyboard(draft.draft_id),
         )
 
     async def process_menu_search(message: Message, *, query: str, input_hash: str) -> None:
@@ -1251,7 +1632,8 @@ def create_router(context: BotContext) -> Router:
             "2) 처음 보는 제품은 같은 사진에서 제품명과 영양정보까지 자동으로 확인합니다.\n"
             "3) 정보가 부족할 때만 필요한 사진을 추가로 요청합니다. 여러 장은 앨범으로 "
             "한 번에 보낼 수 있습니다.\n"
-            "4) 일반 음식은 /food, 외식 메뉴는 /menu, 요리는 /recipe 로 기록할 수 있습니다.\n"
+            "4) 일반 음식은 /food, 외식 메뉴는 /menu, 요리는 /recipe 로 기록할 수 있습니다. "
+            "/food의 DB 결과가 맞지 않으면 사용자가 버튼을 눌러 AI 추정을 선택할 수 있습니다.\n"
             "5) 등록한 상품은 /search 또는 이름만 입력해 한·일 상품명과 관련 태그로 "
             "다시 찾을 수 있습니다.\n"
             "6) 숫자를 확인한 뒤 기록 버튼을 누르세요.\n\n"
@@ -1269,7 +1651,7 @@ def create_router(context: BotContext) -> Router:
             "/undo — 마지막 기록 취소\n"
             "/goal 2000 250 130 60 — kcal/탄/단/지 목표\n"
             "/search 닭가슴살 — 저장된 상품명·브랜드·한일 태그 검색\n"
-            "/food 삶은 달걀 — 일반 음식 검색\n"
+            "/food 삶은 달걀 — 일반 음식 DB 검색, 필요할 때만 AI 추정\n"
             "/menu 스타벅스 카페 라떼 Tall — 외식 메뉴 공식 영양정보 검색\n"
             "/recipe 김치볶음밥 — 재료로 레시피 계산\n"
             "/barcode 8801234567890 — 바코드 숫자로 시작\n"
@@ -1517,21 +1899,42 @@ def create_router(context: BotContext) -> Router:
     async def food_search(message: Message) -> None:
         if not await _guard(message, context.settings):
             return
-        query = " ".join((message.text or "").partition(" ")[2].split())
-        if len(query) < 2 or len(query) > 50:
-            await message.answer("형식: /food 삶은 달걀 (2~50자 음식명)")
+        try:
+            query = normalize_food_estimate_query(
+                (message.text or "").partition(" ")[2],
+                max_chars=context.settings.food_estimate_ai_max_query_chars,
+            )
+        except FoodEstimateError as exc:
+            await message.answer(f"형식: /food 삶은 달걀\n{exc}")
             return
 
-        pending_portions.pop(message.from_user.id, None)
-        pending_recipe_names.pop(message.from_user.id, None)
+        user_id = message.from_user.id
+        pending_portions.pop(user_id, None)
+        pending_recipe_names.pop(user_id, None)
+        input_hash = food_estimate_query_hash(query)
         async with context.sessions() as session:
-            await ensure_user(session, message.from_user.id, context.settings.app_timezone)
+            await ensure_user(session, user_id, context.settings.app_timezone)
+            saved_estimate = await find_product_by_external_id(
+                session,
+                "food_estimate",
+                f"{user_id}:{input_hash[:56]}",
+            )
+            if saved_estimate is not None and saved_estimate.product.owner_telegram_id != user_id:
+                saved_estimate = None
             cached = await search_catalog_products(
                 session,
                 source=MFDS_SOURCE,
                 terms=search_terms(query),
             )
             await session.commit()
+        if saved_estimate is not None:
+            await message.answer(
+                "저장된 AI 추정 음식을 불러왔습니다. OpenAI를 호출하지 않았습니다."
+            )
+            await _offer_version(context, message, saved_estimate, user_id=user_id)
+            return
+
+        estimate_request_id = remember_food_estimate_request(user_id=user_id, query=query)
         ranked_cached = _rank_food_versions(query, cached)
         strong_cached = [
             version
@@ -1541,7 +1944,7 @@ def create_router(context: BotContext) -> Router:
         if strong_cached:
             await message.answer(
                 f"‘{query}’ 검색 결과입니다. 먹은 음식과 가장 가까운 항목을 선택하세요.",
-                reply_markup=_food_results_keyboard(strong_cached),
+                reply_markup=_food_results_keyboard(strong_cached, estimate_request_id),
             )
             return
 
@@ -1549,6 +1952,16 @@ def create_router(context: BotContext) -> Router:
             await message.answer(
                 "일반 음식 검색용 MFDS_API_KEY가 아직 설정되지 않았습니다.\n"
                 "공공데이터포털에서 식품영양성분DB 활용 신청 후 서버 .env에 키를 넣어주세요."
+                + (
+                    "\n\n아래 버튼을 누르면 일반적인 1인분 재료량을 AI로 추정합니다."
+                    if estimate_request_id
+                    else ""
+                ),
+                reply_markup=(
+                    _food_estimate_offer_keyboard(estimate_request_id)
+                    if estimate_request_id
+                    else None
+                ),
             )
             return
 
@@ -1560,16 +1973,37 @@ def create_router(context: BotContext) -> Router:
             if ranked_cached:
                 await message.answer(
                     "식약처 DB 연결이 원활하지 않아 저장된 유사 항목을 보여드립니다.",
-                    reply_markup=_food_results_keyboard(ranked_cached[:5]),
+                    reply_markup=_food_results_keyboard(
+                        ranked_cached[:5],
+                        estimate_request_id,
+                    ),
                 )
             else:
-                await message.answer(str(exc))
+                await message.answer(
+                    str(exc),
+                    reply_markup=(
+                        _food_estimate_offer_keyboard(estimate_request_id)
+                        if estimate_request_id
+                        else None
+                    ),
+                )
             return
 
         if not candidates:
             await message.answer(
                 "검색 결과가 없습니다. ‘계란’ 대신 ‘달걀’처럼 다른 표현이나 "
                 "더 짧은 음식명으로 다시 검색해 주세요."
+                + (
+                    "\n\n아래 버튼은 웹을 검색하지 않고 AI가 가정한 재료량을 "
+                    "식품 DB로 계산합니다. 저장 전에 가정과 변동 범위를 꼭 확인하세요."
+                    if estimate_request_id
+                    else ""
+                ),
+                reply_markup=(
+                    _food_estimate_offer_keyboard(estimate_request_id)
+                    if estimate_request_id
+                    else None
+                ),
             )
             return
 
@@ -1583,7 +2017,7 @@ def create_router(context: BotContext) -> Router:
         await message.answer(
             f"‘{query}’ 검색 결과입니다. 먹은 음식과 가장 가까운 항목을 선택하세요.\n"
             "조리법과 크기에 따라 실제 영양값은 달라질 수 있습니다.",
-            reply_markup=_food_results_keyboard(versions),
+            reply_markup=_food_results_keyboard(versions, estimate_request_id),
         )
 
     @router.message(Command("barcode"))
@@ -1645,6 +2079,14 @@ def create_router(context: BotContext) -> Router:
         for draft_id, draft in list(menu_drafts.items()):
             if draft.user_id == message.from_user.id:
                 menu_drafts.pop(draft_id, None)
+                removed_draft = True
+        for request_id, request in list(food_estimate_requests.items()):
+            if request.user_id == message.from_user.id:
+                food_estimate_requests.pop(request_id, None)
+                removed_draft = True
+        for draft_id, draft in list(food_estimate_drafts.items()):
+            if draft.user_id == message.from_user.id:
+                food_estimate_drafts.pop(draft_id, None)
                 removed_draft = True
         async with context.sessions() as session:
             job = await get_active_job(session, message.from_user.id)
@@ -1786,6 +2228,81 @@ def create_router(context: BotContext) -> Router:
                 version,
                 user_id=callback.from_user.id,
             )
+
+    @router.callback_query(F.data.startswith("food_estimate_start:"))
+    async def start_food_estimate(callback: CallbackQuery) -> None:
+        if not callback.from_user or not _allowed(callback.from_user.id, context.settings):
+            await callback.answer("사용 권한이 없습니다.", show_alert=True)
+            return
+        request_id = (callback.data or "").partition(":")[2]
+        request = food_estimate_requests.pop(request_id, None)
+        if (
+            request is None
+            or request.user_id != callback.from_user.id
+            or monotonic() - request.created_at > FOOD_ESTIMATE_REQUEST_TTL_SECONDS
+        ):
+            await callback.answer(
+                "만료된 추정 요청입니다. /food로 다시 검색해 주세요.",
+                show_alert=True,
+            )
+            return
+        await callback.answer("AI 추정을 시작합니다.")
+        await _clear_inline_keyboard(callback)
+        if callback.message:
+            await process_food_estimate(
+                callback.message,
+                user_id=callback.from_user.id,
+                request=request,
+            )
+
+    @router.callback_query(F.data.startswith("food_estimate_save:"))
+    async def save_food_estimate(callback: CallbackQuery) -> None:
+        if not callback.from_user or not _allowed(callback.from_user.id, context.settings):
+            await callback.answer("사용 권한이 없습니다.", show_alert=True)
+            return
+        draft_id = (callback.data or "").partition(":")[2]
+        draft = food_estimate_drafts.get(draft_id)
+        if draft is None or draft.user_id != callback.from_user.id:
+            await callback.answer("만료되었거나 처리된 추정입니다.", show_alert=True)
+            return
+        async with context.sessions() as session:
+            await ensure_user(session, callback.from_user.id, context.settings.app_timezone)
+            version = await create_product_version(
+                session,
+                _food_estimate_candidate(draft),
+                owner_id=callback.from_user.id,
+            )
+            await session.commit()
+        food_estimate_drafts.pop(draft_id, None)
+        await callback.answer("추정 음식을 저장했습니다.")
+        await _clear_inline_keyboard(callback)
+        if callback.message:
+            await callback.message.answer(
+                "AI 추정 출처와 가정을 포함해 개인 음식으로 저장했습니다. "
+                "다음부터 같은 검색어는 OpenAI를 호출하지 않습니다."
+            )
+            await _offer_version(
+                context,
+                callback.message,
+                version,
+                user_id=callback.from_user.id,
+            )
+
+    @router.callback_query(F.data.startswith("food_estimate_cancel:"))
+    async def cancel_food_estimate(callback: CallbackQuery) -> None:
+        if not callback.from_user or not _allowed(callback.from_user.id, context.settings):
+            await callback.answer("사용 권한이 없습니다.", show_alert=True)
+            return
+        draft_id = (callback.data or "").partition(":")[2]
+        draft = food_estimate_drafts.get(draft_id)
+        if draft is None or draft.user_id != callback.from_user.id:
+            await callback.answer("만료되었거나 처리된 추정입니다.", show_alert=True)
+            return
+        food_estimate_drafts.pop(draft_id, None)
+        await callback.answer("취소했습니다.")
+        await _clear_inline_keyboard(callback)
+        if callback.message:
+            await callback.message.answer("추정 음식을 저장하지 않았습니다.")
 
     @router.callback_query(F.data.startswith("food:"))
     async def select_food(callback: CallbackQuery) -> None:
@@ -2129,7 +2646,11 @@ def create_router(context: BotContext) -> Router:
         if message.from_user.id not in pending_portions:
             if any(
                 draft.user_id == message.from_user.id
-                for draft in (*recipe_drafts.values(), *menu_drafts.values())
+                for draft in (
+                    *recipe_drafts.values(),
+                    *menu_drafts.values(),
+                    *food_estimate_drafts.values(),
+                )
             ):
                 return
             async with context.sessions() as session:

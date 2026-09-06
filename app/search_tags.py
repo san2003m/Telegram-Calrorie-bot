@@ -241,6 +241,25 @@ TAG_DEFINITIONS = (
         },
     ),
     TagDefinition("curry", "type", {"ko": ("카레", "커리"), "ja": ("カレー",), "en": ("curry",)}),
+    TagDefinition(
+        "wrap",
+        "category",
+        {
+            "ko": ("또띠아 랩", "랩 샌드위치"),
+            "ja": ("ラップサンド", "トルティーヤラップ"),
+            "en": ("wrap", "wrap sandwich"),
+        },
+    ),
+    TagDefinition(
+        "kebab",
+        "type",
+        {
+            "ko": ("케밥", "케밥 랩", "도너 케밥"),
+            "ja": ("ケバブ", "ケバブ ラップ", "ドネルケバブ"),
+            "en": ("kebab", "kebab wrap", "doner kebab"),
+        },
+        ("wrap",),
+    ),
 )
 
 SEARCH_CONCEPT_KEYS = tuple(definition.key for definition in TAG_DEFINITIONS)
@@ -385,7 +404,7 @@ def build_product_search_terms(
 ) -> list[SearchTermSpec]:
     direct_source = (
         "ai"
-        if product_source == "ai_label"
+        if product_source in {"ai_label", "food_estimate"}
         else "catalog"
         if product_source in {"open_food_facts", "mfds_food_db", "brand_menu"}
         else "dictionary"

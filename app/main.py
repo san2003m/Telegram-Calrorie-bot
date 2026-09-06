@@ -11,6 +11,7 @@ from app.ai_recognition import NutritionRecognizer
 from app.catalog import OpenFoodFactsCatalog
 from app.config import get_settings
 from app.db import Database
+from app.food_estimate_ai import FoodEstimatePlanner
 from app.health import create_health_app
 from app.image_tools import cleanup_old_uploads
 from app.logging_config import configure_logging
@@ -49,6 +50,16 @@ async def run() -> None:
             else None
         ),
         recognizer=recognizer,
+        food_estimator=(
+            FoodEstimatePlanner(
+                settings.openai_api_key,
+                settings.openai_food_estimate_model,
+                max_output_tokens=settings.food_estimate_ai_max_output_tokens,
+                max_ingredients=settings.food_estimate_max_ingredients,
+            )
+            if settings.openai_api_key
+            else None
+        ),
         recipe_parser=(
             RecipeAIParser(
                 settings.openai_api_key,
@@ -81,7 +92,7 @@ async def run() -> None:
             BotCommand(command="undo", description="마지막 기록 취소"),
             BotCommand(command="goal", description="일일 목표 설정"),
             BotCommand(command="search", description="저장된 상품 검색"),
-            BotCommand(command="food", description="일반 음식 검색"),
+            BotCommand(command="food", description="일반 음식 검색·AI 추정"),
             BotCommand(command="menu", description="외식 메뉴 공식 영양정보 검색"),
             BotCommand(command="recipe", description="재료로 레시피 계산"),
             BotCommand(command="manual", description="직접 기록"),

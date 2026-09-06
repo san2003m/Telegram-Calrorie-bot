@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-5.6-terra"
     openai_recipe_model: str = "gpt-5.6-luna"
     openai_menu_model: str = "gpt-5.6-luna"
+    openai_food_estimate_model: str = "gpt-5.6-luna"
     recipe_ai_daily_limit: int = Field(default=10, ge=0, le=10_000)
     recipe_ai_monthly_limit: int = Field(default=100, ge=0, le=100_000)
     recipe_ai_max_input_chars: int = Field(default=2_000, ge=200, le=20_000)
@@ -32,6 +33,14 @@ class Settings(BaseSettings):
     menu_ai_max_output_tokens: int = Field(default=900, ge=128, le=4_096)
     menu_ai_cooldown_seconds: float = Field(default=15.0, ge=0, le=3_600)
     menu_search_cache_days: int = Field(default=7, ge=1, le=365)
+    food_estimate_ai_daily_limit: int = Field(default=5, ge=0, le=10_000)
+    food_estimate_ai_monthly_limit: int = Field(default=50, ge=0, le=100_000)
+    food_estimate_ai_global_daily_limit: int = Field(default=20, ge=0, le=100_000)
+    food_estimate_ai_global_monthly_limit: int = Field(default=200, ge=0, le=1_000_000)
+    food_estimate_ai_max_query_chars: int = Field(default=80, ge=10, le=160)
+    food_estimate_ai_max_output_tokens: int = Field(default=600, ge=128, le=4_096)
+    food_estimate_max_ingredients: int = Field(default=12, ge=1, le=20)
+    food_estimate_ai_cooldown_seconds: float = Field(default=15.0, ge=0, le=3_600)
 
     mfds_api_key: str = ""
     mfds_api_timeout_seconds: float = Field(default=8.0, ge=1.0, le=30.0)

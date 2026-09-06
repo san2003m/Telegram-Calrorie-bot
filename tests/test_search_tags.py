@@ -78,3 +78,16 @@ def test_matching_term_explains_cross_language_match() -> None:
     ]
 
     assert matching_term("닭가슴살", terms) == "닭가슴살"
+
+
+def test_kebab_wrap_expands_korean_japanese_and_english_aliases() -> None:
+    terms = build_product_search_terms(
+        name="ケバブ ラップ",
+        brand=None,
+        product_source="food_estimate",
+    )
+    values = {term.term for term in terms}
+    concepts = {term.concept_key for term in terms}
+
+    assert {"케밥", "ケバブ", "kebab", "또띠아 랩", "wrap"} <= values
+    assert {"kebab", "wrap"} <= concepts
