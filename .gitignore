@@ -1,5 +1,6 @@
 .env
 .env.tunnel
+docker-compose.override.yml
 .DS_Store
 .venv/
 __pycache__/
