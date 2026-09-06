@@ -213,25 +213,31 @@ docker compose up -d --build
 ```
 
 실행 로그는 콘솔과 `DATA_DIR/logs/calorie-bot.log`에 동시에 기록됩니다. Docker에서는
-`/data/logs/calorie-bot.log`가 `calorie_data` 볼륨에 저장되므로 컨테이너를 다시 만들거나 서버를
-재시작해도 유지됩니다. 기본값은 파일당 10 MiB이며 이전 파일 10개를 보관합니다. Docker 자체의
-표준 출력 로그도 서비스별 10 MiB 파일 3개로 제한됩니다.
+`/data/logs`를 호스트의 `CALORIE_LOG_DIR`(기본 `./runtime/logs`)에 bind mount하므로 컨테이너에
+들어가지 않고도 로그를 읽을 수 있습니다. 배포 디렉터리 밖에 두려면 `.env`에 절대 경로를
+설정하세요. 기본값은 파일당 10 MiB이며 이전 파일 10개를 보관합니다. Docker 자체의 표준 출력
+로그도 서비스별 10 MiB 파일 3개로 제한됩니다.
+
+```dotenv
+CALORIE_LOG_DIR=/home/my-user/var/calorie-bot/logs
+```
+
+처음 연결하는 호스트 디렉터리는 컨테이너의 전용 사용자가 쓸 수 있게 초기화합니다.
+
+```bash
+mkdir -p "${CALORIE_LOG_DIR:-./runtime/logs}"
+docker compose run --rm --no-deps --user root bot chown -R calorie:calorie /data/logs
+```
 
 ```bash
 # Docker의 현재 실행 로그
 docker compose logs -f bot
 
-# 영속 파일 로그
-docker compose exec bot tail -f /data/logs/calorie-bot.log
+# 호스트에서 영속 파일 로그 확인
+tail -f "${CALORIE_LOG_DIR:-./runtime/logs}/calorie-bot.log"
 
 # 순환 파일 목록과 용량
-docker compose exec bot ls -lh /data/logs
-```
-
-로그 볼륨까지 별도로 백업하려면 다음처럼 호스트로 복사할 수 있습니다.
-
-```bash
-docker compose cp bot:/data/logs ./calorie-logs
+ls -lh "${CALORIE_LOG_DIR:-./runtime/logs}"
 ```
 
 ## 사용법

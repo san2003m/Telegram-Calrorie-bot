@@ -10,6 +10,7 @@ __pycache__/
 data/
 uploads/
 backups/
+runtime/
 *.log
 *.log.*
 *.db

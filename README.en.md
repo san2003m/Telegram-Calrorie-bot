@@ -223,26 +223,31 @@ docker compose up -d --build
 ```
 
 Runtime logs are written to both the console and `DATA_DIR/logs/calorie-bot.log`. Under Docker,
-`/data/logs/calorie-bot.log` is stored in the persistent `calorie_data` volume, so it survives
-container replacement and server restarts. By default, each file is limited to 10 MiB and ten
-old files are retained. Docker's own standard-output logs are also limited to three 10 MiB files
-per service.
+`/data/logs` is bind-mounted to `CALORIE_LOG_DIR` on the host (default: `./runtime/logs`), so you
+can read the files without entering the container. Set an absolute path in `.env` to keep them
+outside the deployment directory. By default, each file is limited to 10 MiB and ten old files
+are retained. Docker's own standard-output logs are also limited to three 10 MiB files per service.
+
+```dotenv
+CALORIE_LOG_DIR=/home/my-user/var/calorie-bot/logs
+```
+
+Initialize a newly connected host directory so that the container's dedicated user can write it:
+
+```bash
+mkdir -p "${CALORIE_LOG_DIR:-./runtime/logs}"
+docker compose run --rm --no-deps --user root bot chown -R calorie:calorie /data/logs
+```
 
 ```bash
 # Current Docker runtime logs
 docker compose logs -f bot
 
-# Persistent file log
-docker compose exec bot tail -f /data/logs/calorie-bot.log
+# Persistent file log on the host
+tail -f "${CALORIE_LOG_DIR:-./runtime/logs}/calorie-bot.log"
 
 # Rotated files and their sizes
-docker compose exec bot ls -lh /data/logs
-```
-
-To copy the persistent logs to the host for a separate backup:
-
-```bash
-docker compose cp bot:/data/logs ./calorie-logs
+ls -lh "${CALORIE_LOG_DIR:-./runtime/logs}"
 ```
 
 ## Usage
