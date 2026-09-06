@@ -45,6 +45,7 @@ from app.mfds_catalog import (
     MfdsCatalogError,
     MfdsFoodCatalog,
     food_match_score,
+    ingredient_match_score,
     search_terms,
 )
 from app.models import IntakeLog, RecognitionJob
@@ -534,10 +535,8 @@ def _first_compatible_recipe_version(
     minimum_score: int | None = None,
 ):
     for version in _rank_food_versions(query, versions):
-        if (
-            minimum_score is not None
-            and food_match_score(query, version.product.name) < minimum_score
-        ):
+        score = ingredient_match_score(query, version.product.name)
+        if score <= 0 or (minimum_score is not None and score < minimum_score):
             continue
         try:
             ingredient_multiplier(version, ingredient)
@@ -954,7 +953,14 @@ async def _resolve_recipe(
                     ingredient.name,
                     [*catalog_versions, *ranked],
                 )
-                version = fallback_versions[0] if fallback_versions else None
+                version = next(
+                    (
+                        item
+                        for item in fallback_versions
+                        if ingredient_match_score(ingredient.name, item.product.name) > 0
+                    ),
+                    None,
+                )
             if version is None:
                 detail = f" ({catalog_error})" if catalog_error else ""
                 errors.append(f"{ingredient.name}: 식품 DB에서 찾지 못했습니다.{detail}")

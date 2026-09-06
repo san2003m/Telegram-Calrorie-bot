@@ -15,7 +15,7 @@ from app.schemas import RecipeIngredientInput, StrictModel
 
 logger = logging.getLogger(__name__)
 
-FOOD_ESTIMATE_VERSION = "food-estimate-v2"
+FOOD_ESTIMATE_VERSION = "food-estimate-v3"
 
 
 class FoodEstimateError(ValueError):
@@ -180,6 +180,9 @@ _INSTRUCTIONS = (
     "nutrition, calories, or macros, and do not claim an official recipe. If it is not a "
     "recognizable food, set supported=false and return no ingredients. For supported foods, use "
     "simple Korean generic ingredient names suitable for lookup in the Korean MFDS food database. "
+    "Each ingredient must name exactly one food. Never put alternatives such as 'lamb or beef' "
+    "in one ingredient; choose the most typical single option and disclose that choice as an "
+    "assumption. Avoid brands and complete dishes when a basic ingredient name is available. "
     "Give plausible cooked edible amounts for exactly one typical restaurant serving, using only "
     "g or ml. Use g for solid foods and ml for pourable liquids such as cooking oil, liquid "
     "dressing, and liquid sauce; never express a liquid in g or a solid in ml. Include "

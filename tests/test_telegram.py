@@ -480,6 +480,29 @@ def test_recipe_matching_prefers_a_unit_compatible_food_version() -> None:
     assert selected is solid
 
 
+def test_recipe_matching_rejects_a_compatible_but_unrelated_processed_food() -> None:
+    snack = SimpleNamespace(
+        id=10,
+        basis_amount=Decimal("100"),
+        basis_unit="g",
+        package_amount=None,
+        package_unit=None,
+        servings_per_package=None,
+        piece_count=None,
+        basis_count_amount=None,
+        product=SimpleNamespace(name="홍박쿠과자(양고기향)"),
+    )
+    ingredient = RecipeIngredientInput(
+        name="양고기",
+        amount=Decimal("100"),
+        unit="g",
+    )
+
+    selected = _first_compatible_recipe_version("양고기", ingredient, [snack])
+
+    assert selected is None
+
+
 def test_food_estimate_candidate_is_private_unverified_and_searchable_in_japanese() -> None:
     totals = MacroTotals(
         kcal=Decimal("600"),

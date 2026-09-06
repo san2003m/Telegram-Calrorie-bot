@@ -336,6 +336,11 @@ variation range before saving it as a private food. The same query then reuses t
 another AI call. Add distinguishing details to the `/food` query or enter actual amounts with
 `/recipe` when you need a more specific estimate.
 
+Ingredient lookup for AI estimates is stricter than general-food search. A tomato pasta is not
+accepted merely because its name contains tomato, and a lamb-flavored snack is not counted as lamb.
+The calculation stops instead of offering a low-quality result when no basic-ingredient candidate
+can be verified.
+
 For a recipe, send `/recipe name`, then lines such as `rice 420g`, `kimchi 160g`, `egg 2개`, and
 `총 2인분`. This structured form does not call OpenAI. For free-form text, OpenAI extracts only
 ingredient names, amounts, and units into strict JSON; food lookup and arithmetic remain in the

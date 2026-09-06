@@ -79,6 +79,27 @@ _COOKING_WORDS = {
     "튀김",
     "프라이",
 }
+_INGREDIENT_CONNECTORS = {"and", "or", "및", "또는", "혹은"}
+_PROCESSED_DISH_MARKERS = {
+    "과자",
+    "라면",
+    "맛",
+    "버거",
+    "볶음밥",
+    "사탕",
+    "샌드위치",
+    "스낵",
+    "음료",
+    "주스",
+    "초콜릿",
+    "칩",
+    "케이크",
+    "쿠키",
+    "파스타",
+    "피자",
+    "햄버거",
+    "향",
+}
 
 
 def _alias_text(value: str) -> str:
@@ -150,6 +171,32 @@ def food_match_score(query: str, name: str) -> int:
         score += 50
     score -= max(0, len(name_tokens) - len(query_tokens)) * 40
     return score
+
+
+def ingredient_match_score(query: str, name: str) -> int:
+    """Score a candidate only when it still represents the requested ingredient.
+
+    General food search intentionally allows fuzzy substring matches. Recipe calculation must be
+    stricter because a vegetable name inside a pasta, snack, or sandwich is not that ingredient.
+    """
+    query_tokens = [token for token in _tokens(query) if token not in _INGREDIENT_CONNECTORS]
+    name_tokens = _tokens(name)
+    if not query_tokens or not name_tokens:
+        return 0
+
+    query_text = "".join(query_tokens)
+    name_text = "".join(name_tokens)
+    if any(marker in name_text and marker not in query_text for marker in _PROCESSED_DISH_MARKERS):
+        return 0
+
+    exact_tokens = set(name_tokens)
+    all_tokens_exact = all(token in exact_tokens for token in query_tokens)
+    combined_exact = query_text in exact_tokens
+    if not all_tokens_exact and not combined_exact:
+        return 0
+
+    identity_bonus = 300 if all_tokens_exact else 250
+    return food_match_score(query, name) + identity_bonus
 
 
 def _piece_reference(

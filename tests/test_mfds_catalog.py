@@ -8,6 +8,7 @@ from app.mfds_catalog import (
     MfdsFoodCatalog,
     candidate_from_item,
     food_match_score,
+    ingredient_match_score,
     search_terms,
 )
 
@@ -104,6 +105,20 @@ def test_exact_food_outranks_a_dish_that_merely_contains_it() -> None:
     ranked = sorted(names, key=lambda name: food_match_score("삶은 달걀", name), reverse=True)
 
     assert ranked[0] == "달걀 · 삶은것"
+
+
+def test_ingredient_matching_rejects_processed_dishes_and_flavored_snacks() -> None:
+    assert ingredient_match_score("양고기", "홍박쿠과자(양고기향)") == 0
+    assert ingredient_match_score("양상추", "양상추 해초칩") == 0
+    assert ingredient_match_score("토마토", "치즈오븐토마토파스타") == 0
+    assert ingredient_match_score("양고기 또는 소고기", "양고기, 구운것") == 0
+
+
+def test_ingredient_matching_accepts_basic_and_compound_ingredient_names() -> None:
+    assert ingredient_match_score("토마토", "토마토, 생것") >= 900
+    assert ingredient_match_score("구운 소고기", "소고기, 구운것") >= 900
+    assert ingredient_match_score("밀가루 또띠아", "밀가루또띠아(8인치)") >= 900
+    assert ingredient_match_score("요거트 소스", "델리아 요거트 소스") >= 900
 
 
 async def test_search_does_not_stop_on_many_weak_processed_food_matches() -> None:
