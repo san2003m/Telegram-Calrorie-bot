@@ -155,7 +155,10 @@ ssh -N -L 18080:127.0.0.1:8080 calorie-server
 
 The dashboard reads only the user configured by `OWNER_TELEGRAM_ID`. It shows today's calorie
 and macro targets, 7-day and 30-day calorie trends, the latest 12 entries, and each nutrition
-source. It refreshes every 60 seconds and also provides a manual refresh button.
+source. It refreshes every 60 seconds and also provides a manual refresh button. It is read-only
+by default. After configuring the Cloudflare Access token verification described below, the web
+UI can search saved products and add an intake, create a private manual food, edit an intake's
+amount or time, soft-cancel and restore entries, and update daily targets.
 
 ### External access through Cloudflare Access
 
@@ -175,6 +178,28 @@ policy is applied.
 docker compose --profile tunnel up -d cloudflared
 docker compose --profile tunnel logs -f cloudflared
 ```
+
+Web writes do not trust the Tunnel alone. The origin verifies the RS256 signature, issuer,
+application audience, and allowed email of the Access JWT. Copy the `Application Audience (AUD)
+Tag` from the Access application in Cloudflare Zero Trust and add the following values to `.env`.
+The team domain has the form `https://your-team.cloudflareaccess.com`.
+
+```dotenv
+DASHBOARD_WRITES_ENABLED=true
+CLOUDFLARE_ACCESS_TEAM_DOMAIN=https://your-team.cloudflareaccess.com
+CLOUDFLARE_ACCESS_AUD=the_application_audience_tag
+CLOUDFLARE_ACCESS_ALLOWED_EMAIL=the_owner_email_allowed_by_the_access_policy
+```
+
+```bash
+docker compose up -d --build bot
+```
+
+The write API stays locked if any value is missing or JWT verification fails. An HTTP dashboard
+opened through an SSH tunnel remains readable but cannot write because it has no Access assertion.
+Mutations additionally require a same-origin request and a one-hour CSRF token. New intake rows
+carry an idempotency identifier to prevent request retries from duplicating the entry. Canceling
+an entry is a soft cancel, so it remains available in the web UI for restoration.
 
 Only `cloudflared` reads `.env.tunnel`; the bot container does not receive it. `cloudflared` reaches
 `bot:8080` over the internal Compose network and does not open another host port. Anyone with the

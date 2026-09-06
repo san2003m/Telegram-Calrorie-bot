@@ -30,19 +30,26 @@
       font-family: -apple-system, BlinkMacSystemFont, "Pretendard", "Noto Sans KR", sans-serif;
       min-height: 100vh;
     }
-    button { font: inherit; }
+    button, input, select { font: inherit; }
+    button { color: inherit; }
     .shell { width: min(1180px, calc(100% - 36px)); margin: 0 auto; padding: 46px 0 64px; }
     header { display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; margin-bottom: 30px; }
     .eyebrow { color: var(--green); font-size: .75rem; font-weight: 800; letter-spacing: .13em; text-transform: uppercase; }
     h1 { margin: 6px 0 5px; font-size: clamp(2rem, 4vw, 3.25rem); letter-spacing: -.06em; line-height: 1.05; }
     .subtitle, .updated { margin: 0; color: var(--muted); font-size: .9rem; }
-    .header-actions { display: flex; align-items: center; gap: 12px; }
-    .refresh {
+    .header-actions { display: flex; align-items: center; justify-content: flex-end; gap: 9px; flex-wrap: wrap; }
+    .button, .refresh {
       border: 1px solid var(--line); background: rgba(255,255,255,.62); color: var(--ink);
-      border-radius: 999px; padding: 10px 14px; cursor: pointer; font-weight: 700;
+      border-radius: 999px; padding: 10px 14px; cursor: pointer; font-weight: 750;
     }
-    .refresh:hover { background: #fff; }
-    .refresh:disabled { opacity: .55; cursor: wait; }
+    .button:hover, .refresh:hover { background: #fff; }
+    .button.primary { color: white; background: var(--green); border-color: var(--green); }
+    .button.danger { color: #9a382b; }
+    .button.small { padding: 7px 10px; font-size: .75rem; }
+    .button:disabled, .refresh:disabled { opacity: .55; cursor: wait; }
+    .access-status { padding: 7px 10px; border-radius: 999px; color: var(--muted); background: rgba(255,255,255,.5); font-size: .72rem; font-weight: 800; }
+    .access-status.ready { color: var(--green); background: var(--green-soft); }
+    .editable-only[hidden], [hidden] { display: none !important; }
     .grid { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(280px, .55fr); gap: 18px; }
     .card {
       background: var(--card); border: 1px solid rgba(255,255,255,.8); border-radius: 24px;
@@ -97,7 +104,7 @@
     .recent { grid-column: 1 / -1; padding: 27px 28px 14px; }
     .count-badge { background: var(--green-soft); color: var(--green); padding: 6px 10px; border-radius: 999px; font-size: .75rem; font-weight: 800; }
     .recent-list { margin-top: 17px; }
-    .entry { display: grid; grid-template-columns: minmax(180px, 1.35fr) .7fr .55fr 1fr; gap: 20px; align-items: center; padding: 17px 4px; border-top: 1px solid var(--line); }
+    .entry { display: grid; grid-template-columns: minmax(180px, 1.35fr) .65fr .5fr .9fr auto; gap: 16px; align-items: center; padding: 17px 4px; border-top: 1px solid var(--line); }
     .entry:first-child { border-top: 0; }
     .food-name { font-weight: 780; letter-spacing: -.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .food-meta, .entry-time { color: var(--muted); font-size: .77rem; margin-top: 4px; }
@@ -109,20 +116,50 @@
     .tag.source { color: var(--green); border-color: rgba(29,107,74,.2); background: rgba(220,234,221,.5); }
     .empty { padding: 44px 8px; text-align: center; color: var(--muted); border-top: 1px solid var(--line); line-height: 1.6; }
     .error { display: none; margin-bottom: 18px; padding: 14px 16px; border-radius: 14px; color: #8e3427; background: #f9dfd8; font-size: .86rem; }
+    .toast { display: none; position: fixed; z-index: 30; left: 50%; bottom: 24px; transform: translateX(-50%); padding: 12px 16px; border-radius: 999px; color: white; background: #25302b; box-shadow: var(--shadow); font-size: .83rem; font-weight: 700; }
+    .composer { grid-column: 1 / -1; padding: 27px 28px; }
+    .composer-copy { color: var(--muted); font-size: .82rem; margin: 6px 0 0; }
+    .search-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; margin-top: 19px; }
+    input, select { width: 100%; border: 1px solid var(--line); border-radius: 13px; padding: 11px 12px; color: var(--ink); background: rgba(255,255,255,.82); outline: none; }
+    input:focus, select:focus { border-color: rgba(29,107,74,.55); box-shadow: 0 0 0 3px rgba(29,107,74,.1); }
+    .search-results { display: grid; gap: 10px; margin-top: 14px; }
+    .product-result { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 14px; align-items: center; padding: 15px; border: 1px solid var(--line); border-radius: 16px; background: rgba(255,255,255,.52); }
+    .product-title { font-weight: 800; }
+    .product-detail { color: var(--muted); font-size: .76rem; margin-top: 5px; line-height: 1.5; }
+    .portion-form { display: grid; grid-template-columns: 88px 90px auto; gap: 7px; align-items: center; }
+    .portion-form input, .portion-form select { padding: 8px 9px; }
+    .entry-actions { display: flex; gap: 5px; justify-content: flex-end; }
+    .voided-entry { opacity: .68; }
+    dialog { width: min(560px, calc(100% - 24px)); border: 0; border-radius: 23px; padding: 0; color: var(--ink); background: #f9f7f1; box-shadow: 0 30px 90px rgba(20,30,25,.3); }
+    dialog::backdrop { background: rgba(16,25,21,.46); backdrop-filter: blur(3px); }
+    .dialog-body { padding: 26px; }
+    .dialog-head { display: flex; justify-content: space-between; gap: 20px; align-items: center; margin-bottom: 20px; }
+    .dialog-close { border: 0; background: transparent; cursor: pointer; color: var(--muted); font-size: 1.4rem; }
+    .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 13px; }
+    .field { display: grid; gap: 6px; }
+    .field.full { grid-column: 1 / -1; }
+    .field label { color: var(--muted); font-size: .76rem; font-weight: 750; }
+    .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 21px; }
+    .muted-note { color: var(--muted); font-size: .75rem; line-height: 1.55; }
     footer { text-align: center; color: var(--muted); font-size: .73rem; margin-top: 25px; }
     @media (max-width: 760px) {
       .shell { width: min(100% - 22px, 680px); padding-top: 28px; }
       header { align-items: flex-start; flex-direction: column; }
       .header-actions { width: 100%; justify-content: space-between; }
       .grid { grid-template-columns: 1fr; }
-      .hero, .quick, .trend, .recent { padding: 22px 19px; }
+      .hero, .quick, .trend, .recent, .composer { padding: 22px 19px; }
       .kcal-row { grid-template-columns: 1fr; justify-items: center; }
       .kcal-detail { width: 100%; }
       .trend { grid-column: auto; }
       .recent { grid-column: auto; }
       .entry { grid-template-columns: 1fr auto; gap: 8px 15px; }
       .entry-macros { grid-column: 1; }
-      .tags { grid-column: 2; grid-row: 2; }
+      .tags { justify-content: flex-start; }
+      .entry-actions { grid-column: 1 / -1; justify-content: flex-start; }
+      .product-result { grid-template-columns: 1fr; }
+      .portion-form { grid-template-columns: 1fr 1fr auto; }
+      .form-grid { grid-template-columns: 1fr; }
+      .field.full { grid-column: auto; }
       .chart-wrap { overflow-x: auto; }
       #chart { min-width: 610px; }
     }
@@ -137,12 +174,16 @@
         <p class="subtitle">Telegram에 기록한 섭취 내역을 한눈에 확인합니다.</p>
       </div>
       <div class="header-actions">
+        <span class="access-status" id="accessStatus">읽기 전용</span>
+        <button class="button editable-only" id="manualOpen" type="button" hidden>직접 입력</button>
+        <button class="button editable-only" id="goalOpen" type="button" hidden>목표 수정</button>
         <p class="updated" id="updated">불러오는 중…</p>
         <button class="refresh" id="refresh" type="button">새로고침</button>
       </div>
     </header>
 
     <div class="error" id="error" role="alert"></div>
+    <div class="toast" id="toast" role="status"></div>
 
     <section class="grid">
       <article class="card hero">
@@ -173,6 +214,21 @@
         <p class="goal-hint" id="goalHint">Telegram에서 <b>/goal kcal 탄수화물 단백질 지방</b>을 입력하면 목표 대비 진행률이 표시됩니다.</p>
       </aside>
 
+      <article class="card composer editable-only" id="composer" hidden>
+        <div class="card-head">
+          <div>
+            <h2>저장된 음식 빠르게 기록</h2>
+            <p class="composer-copy">제품명·브랜드·한국어·일본어 태그로 찾습니다. AI나 외부 API는 호출하지 않습니다.</p>
+          </div>
+          <button class="button primary" id="manualShortcut" type="button">새 음식 직접 입력</button>
+        </div>
+        <form class="search-row" id="searchForm">
+          <input id="searchQuery" type="search" maxlength="60" placeholder="예: 닭가슴살, 계란, コーヒー" autocomplete="off" required>
+          <button class="button primary" type="submit">검색</button>
+        </form>
+        <div class="search-results" id="searchResults"></div>
+      </article>
+
       <article class="card trend">
         <div class="card-head">
           <h2>섭취 추이</h2>
@@ -192,9 +248,61 @@
         <div class="card-head"><h2>최근 기록</h2><span class="date">최대 12건</span></div>
         <div class="recent-list" id="recentList"></div>
       </article>
+
+      <article class="card recent editable-only" id="voidedCard" hidden>
+        <div class="card-head"><h2>취소된 기록</h2><span class="date">필요하면 복원할 수 있어요</span></div>
+        <div class="recent-list" id="voidedList"></div>
+      </article>
     </section>
-    <footer>개인 서버의 읽기 전용 화면 · 데이터 수정은 Telegram 봇에서 할 수 있습니다.</footer>
+    <footer id="footerText">Cloudflare Access 인증 시 웹에서도 안전하게 기록을 관리할 수 있습니다.</footer>
   </main>
+
+  <dialog id="manualDialog">
+    <form class="dialog-body" id="manualForm">
+      <div class="dialog-head"><h2>새 음식 직접 입력</h2><button class="dialog-close" type="button" data-close="manualDialog" aria-label="닫기">×</button></div>
+      <div class="form-grid">
+        <div class="field full"><label for="manualName">음식 이름</label><input id="manualName" maxlength="240" required placeholder="예: 삶은 달걀"></div>
+        <div class="field full"><label for="manualBrand">브랜드 (선택)</label><input id="manualBrand" maxlength="160" placeholder="예: 직접 조리"></div>
+        <div class="field"><label for="manualBasisAmount">영양정보 기준량</label><input id="manualBasisAmount" type="number" min="0.0001" step="any" value="1" required></div>
+        <div class="field"><label for="manualBasisUnit">기준 단위</label><select id="manualBasisUnit"><option value="serving">회분</option><option value="g">g</option><option value="ml">ml</option><option value="piece">개</option><option value="package">포장</option></select></div>
+        <div class="field"><label for="manualKcal">칼로리 (kcal)</label><input id="manualKcal" type="number" min="0" step="any" required></div>
+        <div class="field"><label for="manualCarbs">탄수화물 (g)</label><input id="manualCarbs" type="number" min="0" step="any" required></div>
+        <div class="field"><label for="manualProtein">단백질 (g)</label><input id="manualProtein" type="number" min="0" step="any" required></div>
+        <div class="field"><label for="manualFat">지방 (g)</label><input id="manualFat" type="number" min="0" step="any" required></div>
+        <div class="field"><label for="manualIntakeAmount">먹은 양</label><input id="manualIntakeAmount" type="number" min="0.0001" step="any" value="1" required></div>
+        <div class="field"><label for="manualIntakeUnit">섭취 단위</label><select id="manualIntakeUnit"><option value="serving">회분</option><option value="g">g</option><option value="ml">ml</option><option value="piece">개</option><option value="package">포장</option><option value="percent">%</option></select></div>
+        <div class="field full"><label for="manualTime">먹은 시각 (비우면 지금)</label><input id="manualTime" type="datetime-local"></div>
+      </div>
+      <p class="muted-note">입력한 영양값은 기준량 전체의 값입니다. 음식은 개인 전용 상품으로 저장되어 다음 검색에서도 찾을 수 있습니다.</p>
+      <div class="dialog-actions"><button class="button" type="button" data-close="manualDialog">취소</button><button class="button primary" type="submit">저장하고 기록</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="goalDialog">
+    <form class="dialog-body" id="goalForm">
+      <div class="dialog-head"><h2>일일 목표 수정</h2><button class="dialog-close" type="button" data-close="goalDialog" aria-label="닫기">×</button></div>
+      <div class="form-grid">
+        <div class="field full"><label for="goalKcal">칼로리 (kcal)</label><input id="goalKcal" type="number" min="1" step="any" required></div>
+        <div class="field"><label for="goalCarbs">탄수화물 (g)</label><input id="goalCarbs" type="number" min="0.1" step="any" required></div>
+        <div class="field"><label for="goalProtein">단백질 (g)</label><input id="goalProtein" type="number" min="0.1" step="any" required></div>
+        <div class="field"><label for="goalFat">지방 (g)</label><input id="goalFat" type="number" min="0.1" step="any" required></div>
+      </div>
+      <div class="dialog-actions"><button class="button" type="button" data-close="goalDialog">취소</button><button class="button primary" type="submit">목표 저장</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="editDialog">
+    <form class="dialog-body" id="editForm">
+      <div class="dialog-head"><div><h2>섭취 기록 수정</h2><p class="composer-copy" id="editName"></p></div><button class="dialog-close" type="button" data-close="editDialog" aria-label="닫기">×</button></div>
+      <div class="form-grid">
+        <div class="field"><label for="editAmount">먹은 양</label><input id="editAmount" type="number" min="0.0001" step="any" required></div>
+        <div class="field"><label for="editUnit">단위</label><select id="editUnit"><option value="g">g</option><option value="ml">ml</option><option value="piece">개</option><option value="serving">회분</option><option value="package">포장</option><option value="percent">%</option></select></div>
+        <div class="field full"><label for="editTime">먹은 시각</label><input id="editTime" type="datetime-local" required></div>
+      </div>
+      <p class="muted-note">섭취량을 바꾸면 이 기록의 칼로리와 탄단지만 다시 계산합니다. 저장된 상품 정보와 과거의 다른 기록은 바뀌지 않습니다.</p>
+      <div class="dialog-actions"><button class="button" type="button" data-close="editDialog">취소</button><button class="button primary" type="submit">수정 저장</button></div>
+    </form>
+  </dialog>
 
   <script>
     const state = { data: null, days: 7 };
@@ -375,6 +483,269 @@
     $("refresh").addEventListener("click", load);
     load();
     setInterval(load, 60000);
+  </script>
+  <script>
+    state.csrf = null;
+    state.editing = null;
+    let toastTimer;
+
+    function requestId() {
+      if (crypto.randomUUID) return crypto.randomUUID();
+      return "10000000-1000-4000-8000-100000000000".replace(/[018]/g, c =>
+        (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16)
+      );
+    }
+
+    function showToast(message) {
+      const toast = $("toast");
+      toast.textContent = message;
+      toast.style.display = "block";
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => { toast.style.display = "none"; }, 3500);
+    }
+
+    async function errorMessage(response) {
+      try {
+        const body = await response.json();
+        if (typeof body.detail === "string") return body.detail;
+        if (Array.isArray(body.detail) && body.detail.length) return body.detail[0].msg || "입력값을 확인해 주세요.";
+      } catch (_) {}
+      return "요청을 처리하지 못했습니다.";
+    }
+
+    async function apiRequest(url, options = {}) {
+      const headers = { Accept: "application/json", ...(options.headers || {}) };
+      if (options.body) headers["Content-Type"] = "application/json";
+      if (options.method && options.method !== "GET") headers["X-CSRF-Token"] = state.csrf || "";
+      const response = await fetch(url, { ...options, headers, cache: "no-store" });
+      if (!response.ok) throw new Error(await errorMessage(response));
+      return response.json();
+    }
+
+    function setWritable(enabled) {
+      document.querySelectorAll(".editable-only").forEach(node => { node.hidden = !enabled; });
+      $("accessStatus").textContent = enabled ? "편집 가능" : "읽기 전용";
+      $("accessStatus").classList.toggle("ready", enabled);
+      $("footerText").textContent = enabled
+        ? "Cloudflare Access 인증됨 · 모든 변경은 OWNER_TELEGRAM_ID의 기록에만 적용됩니다."
+        : "현재 연결에서는 조회만 가능합니다. 외부 Access 주소로 로그인하면 편집할 수 있습니다.";
+    }
+
+    async function initializeAccess() {
+      try {
+        const response = await fetch("/api/web/session", { headers: { Accept: "application/json" }, cache: "no-store" });
+        if (!response.ok) return setWritable(false);
+        const data = await response.json();
+        state.csrf = data.csrf_token;
+        setWritable(Boolean(data.writable));
+        if (state.data) render(state.data);
+      } catch (_) { setWritable(false); }
+    }
+
+    function actionButton(label, action, danger = false) {
+      const button = element("button", `button small${danger ? " danger" : ""}`, label);
+      button.type = "button";
+      button.addEventListener("click", action);
+      return button;
+    }
+
+    function editorRenderRecent(items) {
+      const list = $("recentList"); list.replaceChildren();
+      if (!items.length) {
+        list.append(element("div", "empty", state.csrf ? "아직 기록이 없습니다. 위 검색창에서 바로 기록해 보세요." : "아직 기록이 없습니다. Telegram 봇에서 음식을 기록해 보세요."));
+        return;
+      }
+      items.forEach(item => {
+        const entry = element("div", "entry");
+        const food = element("div");
+        food.append(element("div", "food-name", item.name));
+        food.append(element("div", "food-meta", [item.brand, item.amount, item.nutrition.basis].filter(Boolean).join(" · ")));
+        const time = element("div", "entry-time", new Intl.DateTimeFormat("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(item.consumed_at)));
+        const kcal = element("div", "entry-kcal");
+        kcal.append(document.createTextNode(formatNumber(item.kcal, 0)), element("small", "", " kcal"));
+        const macros = element("div", "entry-macros", `탄 ${formatNumber(item.carbs_g)} · 단 ${formatNumber(item.protein_g)} · 지 ${formatNumber(item.fat_g)} g`);
+        const tail = element("div");
+        const tags = element("div", "tags");
+        const labels = sourceLabel(item);
+        tags.append(element("span", "tag source", labels.source));
+        if (item.nutrition.estimated) tags.append(element("span", "tag", "추정값"));
+        tail.append(tags);
+        if (state.csrf) {
+          const actions = element("div", "entry-actions");
+          actions.style.marginTop = "7px";
+          actions.append(
+            actionButton("수정", () => openEdit(item)),
+            actionButton("취소", () => voidLog(item), true)
+          );
+          tail.append(actions);
+        }
+        entry.append(food, time, kcal, macros, tail); list.append(entry);
+      });
+    }
+
+    function renderVoided(items) {
+      const card = $("voidedCard");
+      if (!state.csrf || !items.length) { card.hidden = true; return; }
+      card.hidden = false;
+      const list = $("voidedList"); list.replaceChildren();
+      items.forEach(item => {
+        const entry = element("div", "entry voided-entry");
+        const food = element("div");
+        food.append(element("div", "food-name", item.name), element("div", "food-meta", `${item.amount} · 취소됨`));
+        const time = element("div", "entry-time", new Intl.DateTimeFormat("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(item.consumed_at)));
+        const kcal = element("div", "entry-kcal");
+        kcal.append(document.createTextNode(formatNumber(item.kcal, 0)), element("small", "", " kcal"));
+        const spacer = element("div", "entry-macros", "집계에서 제외됨");
+        const actions = element("div", "entry-actions");
+        actions.append(actionButton("복원", () => restoreLog(item)));
+        entry.append(food, time, kcal, spacer, actions); list.append(entry);
+      });
+    }
+
+    renderRecent = editorRenderRecent;
+    const dashboardRender = render;
+    render = function(data) {
+      dashboardRender(data);
+      renderVoided(data.voided_recent || []);
+    };
+
+    function openEdit(item) {
+      state.editing = item;
+      $("editName").textContent = item.name;
+      $("editAmount").value = item.input_amount;
+      const units = $("editUnit"); units.replaceChildren();
+      (item.portion_options || []).forEach(option => {
+        const node = document.createElement("option"); node.value = option.unit; node.textContent = option.label; units.append(node);
+      });
+      units.value = item.input_unit;
+      $("editTime").value = item.consumed_at.slice(0, 16);
+      $("editDialog").showModal();
+    }
+
+    async function voidLog(item) {
+      if (!confirm(`‘${item.name}’ 기록을 취소할까요? 나중에 복원할 수 있습니다.`)) return;
+      try {
+        await apiRequest(`/api/web/intakes/${item.id}/void`, { method: "POST" });
+        showToast("기록을 취소했습니다.");
+        await load();
+      } catch (error) { showToast(error.message); }
+    }
+
+    async function restoreLog(item) {
+      try {
+        await apiRequest(`/api/web/intakes/${item.id}/restore`, { method: "POST" });
+        showToast("기록을 복원했습니다.");
+        await load();
+      } catch (error) { showToast(error.message); }
+    }
+
+    function renderSearchResults(products) {
+      const list = $("searchResults"); list.replaceChildren();
+      if (!products.length) {
+        list.append(element("div", "empty", "저장된 음식에서 찾지 못했습니다. 새 음식 직접 입력을 이용해 주세요."));
+        return;
+      }
+      products.forEach(product => {
+        const row = element("div", "product-result");
+        const copy = element("div");
+        copy.append(element("div", "product-title", product.name));
+        const n = product.nutrition;
+        copy.append(element("div", "product-detail", `${product.brand ? `${product.brand} · ` : ""}${formatNumber(n.kcal, 0)} kcal · 탄 ${formatNumber(n.carbs_g)} · 단 ${formatNumber(n.protein_g)} · 지 ${formatNumber(n.fat_g)} g`));
+        const form = element("form", "portion-form");
+        const amount = document.createElement("input"); amount.type = "number"; amount.min = "0.0001"; amount.step = "any"; amount.required = true;
+        const unit = document.createElement("select");
+        product.portion_options.forEach(option => {
+          const node = document.createElement("option"); node.value = option.unit; node.textContent = option.label; node.dataset.amount = option.default_amount; unit.append(node);
+        });
+        amount.value = product.portion_options[0]?.default_amount || 1;
+        unit.addEventListener("change", () => { amount.value = unit.selectedOptions[0].dataset.amount || 1; });
+        const submit = element("button", "button primary small", "기록"); submit.type = "submit";
+        form.append(amount, unit, submit);
+        form.addEventListener("submit", async event => {
+          event.preventDefault(); submit.disabled = true;
+          try {
+            const result = await apiRequest("/api/web/intakes", { method: "POST", body: JSON.stringify({ product_version_id: product.version_id, amount: Number(amount.value), unit: unit.value, request_id: requestId() }) });
+            showToast(`${result.log.name} · ${result.log.amount} · ${formatNumber(result.log.kcal, 0)} kcal 기록됨`);
+            await load();
+          } catch (error) { showToast(error.message); }
+          finally { submit.disabled = false; }
+        });
+        row.append(copy, form); list.append(row);
+      });
+    }
+
+    $("searchForm").addEventListener("submit", async event => {
+      event.preventDefault();
+      const query = $("searchQuery").value.trim();
+      if (!query) return;
+      $("searchResults").replaceChildren(element("div", "empty", "검색 중…"));
+      try {
+        const data = await apiRequest(`/api/web/products?query=${encodeURIComponent(query)}`);
+        renderSearchResults(data.products);
+      } catch (error) { $("searchResults").replaceChildren(element("div", "empty", error.message)); }
+    });
+
+    function openManual() { $("manualDialog").showModal(); }
+    $("manualOpen").addEventListener("click", openManual);
+    $("manualShortcut").addEventListener("click", openManual);
+    function syncManualUnits() {
+      const basis = $("manualBasisUnit").value;
+      Array.from($("manualIntakeUnit").options).forEach(option => {
+        option.disabled = option.value !== basis && !(basis === "package" && option.value === "percent");
+      });
+      $("manualIntakeUnit").value = basis;
+    }
+    $("manualBasisUnit").addEventListener("change", syncManualUnits);
+    syncManualUnits();
+
+    $("manualForm").addEventListener("submit", async event => {
+      event.preventDefault();
+      const submit = event.submitter; submit.disabled = true;
+      const time = $("manualTime").value;
+      const payload = {
+        name: $("manualName").value,
+        brand: $("manualBrand").value || null,
+        basis_amount: Number($("manualBasisAmount").value), basis_unit: $("manualBasisUnit").value,
+        kcal: Number($("manualKcal").value), carbs_g: Number($("manualCarbs").value), protein_g: Number($("manualProtein").value), fat_g: Number($("manualFat").value),
+        intake_amount: Number($("manualIntakeAmount").value), intake_unit: $("manualIntakeUnit").value,
+        consumed_at: time || null, request_id: requestId()
+      };
+      try {
+        const result = await apiRequest("/api/web/manual-intakes", { method: "POST", body: JSON.stringify(payload) });
+        $("manualDialog").close(); event.target.reset(); $("manualBasisAmount").value = 1; $("manualIntakeAmount").value = 1;
+        showToast(`${result.log.name}을 기록했습니다.`); await load();
+      } catch (error) { showToast(error.message); }
+      finally { submit.disabled = false; }
+    });
+
+    $("goalOpen").addEventListener("click", () => {
+      const goals = state.data?.today.goals || {};
+      $("goalKcal").value = goals.kcal || 2000; $("goalCarbs").value = goals.carbs_g || 250;
+      $("goalProtein").value = goals.protein_g || 120; $("goalFat").value = goals.fat_g || 60;
+      $("goalDialog").showModal();
+    });
+
+    $("goalForm").addEventListener("submit", async event => {
+      event.preventDefault(); const submit = event.submitter; submit.disabled = true;
+      try {
+        await apiRequest("/api/web/goals", { method: "PATCH", body: JSON.stringify({ kcal: Number($("goalKcal").value), carbs_g: Number($("goalCarbs").value), protein_g: Number($("goalProtein").value), fat_g: Number($("goalFat").value) }) });
+        $("goalDialog").close(); showToast("일일 목표를 저장했습니다."); await load();
+      } catch (error) { showToast(error.message); }
+      finally { submit.disabled = false; }
+    });
+
+    $("editForm").addEventListener("submit", async event => {
+      event.preventDefault(); const submit = event.submitter; submit.disabled = true;
+      try {
+        await apiRequest(`/api/web/intakes/${state.editing.id}`, { method: "PATCH", body: JSON.stringify({ amount: Number($("editAmount").value), unit: $("editUnit").value, consumed_at: $("editTime").value }) });
+        $("editDialog").close(); showToast("섭취 기록을 수정했습니다."); await load();
+      } catch (error) { showToast(error.message); }
+      finally { submit.disabled = false; }
+    });
+
+    document.querySelectorAll("[data-close]").forEach(button => button.addEventListener("click", () => $(button.dataset.close).close()));
+    document.querySelectorAll("dialog").forEach(dialog => dialog.addEventListener("click", event => { if (event.target === dialog) dialog.close(); }));
+    initializeAccess();
   </script>
 </body>
 </html>

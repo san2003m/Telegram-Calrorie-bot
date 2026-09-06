@@ -389,6 +389,7 @@ async def add_intake(
     input_amount: Decimal | None = None,
     input_unit: str | None = None,
     consumed_at: datetime | None = None,
+    client_request_id: str | None = None,
 ) -> IntakeLog:
     totals = MacroTotals(
         kcal=version.kcal,
@@ -407,10 +408,64 @@ async def add_intake(
         protein_g=totals.protein_g,
         fat_g=totals.fat_g,
         consumed_at=consumed_at or utc_now(),
+        client_request_id=client_request_id,
     )
     session.add(log)
     await session.flush()
     return log
+
+
+async def get_intake_by_client_request_id(
+    session: AsyncSession, user_id: int, client_request_id: str
+) -> IntakeLog | None:
+    return await session.scalar(
+        select(IntakeLog)
+        .options(joinedload(IntakeLog.product_version).joinedload(ProductVersion.product))
+        .where(
+            IntakeLog.user_telegram_id == user_id,
+            IntakeLog.client_request_id == client_request_id,
+        )
+    )
+
+
+async def get_intake_log(session: AsyncSession, user_id: int, log_id: int) -> IntakeLog | None:
+    return await session.scalar(
+        select(IntakeLog)
+        .options(joinedload(IntakeLog.product_version).joinedload(ProductVersion.product))
+        .where(
+            IntakeLog.id == log_id,
+            IntakeLog.user_telegram_id == user_id,
+        )
+    )
+
+
+def update_intake(
+    session: AsyncSession,
+    log: IntakeLog,
+    *,
+    multiplier: Decimal,
+    input_amount: Decimal,
+    input_unit: str,
+    consumed_at: datetime,
+) -> None:
+    totals = MacroTotals(
+        kcal=log.product_version.kcal,
+        carbs_g=log.product_version.carbs_g,
+        protein_g=log.product_version.protein_g,
+        fat_g=log.product_version.fat_g,
+    ).scaled(multiplier)
+    log.multiplier = multiplier
+    log.input_amount = input_amount
+    log.input_unit = input_unit
+    log.kcal = totals.kcal
+    log.carbs_g = totals.carbs_g
+    log.protein_g = totals.protein_g
+    log.fat_g = totals.fat_g
+    log.consumed_at = consumed_at
+
+
+def set_intake_voided(log: IntakeLog, *, voided: bool) -> None:
+    log.voided_at = utc_now() if voided else None
 
 
 async def get_last_portion(

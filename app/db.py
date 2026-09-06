@@ -43,6 +43,7 @@ def _add_compatibility_columns(connection: Connection) -> None:
         "intake_logs": {
             "input_amount": "NUMERIC(12, 4)",
             "input_unit": "VARCHAR(24)",
+            "client_request_id": "VARCHAR(64)",
         },
     }
     for table_name, columns in additions.items():
@@ -58,6 +59,14 @@ def _add_compatibility_columns(connection: Connection) -> None:
             "ON products (external_source, external_id)"
         )
     )
+    intake_columns = {column["name"] for column in inspect(connection).get_columns("intake_logs")}
+    if {"user_telegram_id", "client_request_id"} <= intake_columns:
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_intake_log_user_client_request "
+                "ON intake_logs (user_telegram_id, client_request_id)"
+            )
+        )
 
 
 def _backfill_legacy_package_amounts(connection: Connection) -> None:

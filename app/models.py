@@ -148,9 +148,19 @@ class IntakeLog(Base):
         DateTime(timezone=True), default=utc_now, index=True
     )
     voided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    client_request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     user: Mapped[User] = relationship(back_populates="logs")
     product_version: Mapped[ProductVersion] = relationship(back_populates="logs")
+
+    __table_args__ = (
+        Index(
+            "ix_intake_log_user_client_request",
+            "user_telegram_id",
+            "client_request_id",
+            unique=True,
+        ),
+    )
 
 
 class RecognitionJob(Base):

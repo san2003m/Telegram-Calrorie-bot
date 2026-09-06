@@ -46,6 +46,10 @@ class Settings(BaseSettings):
 
     health_host: str = "127.0.0.1"
     health_port: int = Field(default=8080, ge=1, le=65535)
+    dashboard_writes_enabled: bool = False
+    cloudflare_access_team_domain: str = ""
+    cloudflare_access_aud: str = ""
+    cloudflare_access_allowed_email: str = ""
     openfoodfacts_user_agent: str = (
         "calorie-telegram-bot/0.1 (personal-use; contact=local@example.invalid)"
     )

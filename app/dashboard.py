@@ -12,9 +12,11 @@ from sqlalchemy.orm import joinedload
 
 from app.models import IntakeLog, ProductVersion, User
 from app.portion import ParsedPortion, display_portion
+from app.web_api import portion_options
 
 HISTORY_DAYS = 30
 RECENT_LOG_LIMIT = 12
+VOIDED_LOG_LIMIT = 8
 DASHBOARD_HTML = Path(__file__).with_name("dashboard.html").read_text(encoding="utf-8")
 
 
@@ -84,10 +86,24 @@ def _serialize_recent(logs: Sequence[IntakeLog], tz: ZoneInfo) -> list[dict[str,
         result.append(
             {
                 "id": log.id,
+                "version_id": version.id,
                 "name": product.name,
                 "brand": product.brand,
                 "amount": _portion_text(log),
+                "input_amount": _number(
+                    log.input_amount
+                    if log.input_amount is not None
+                    else version.basis_amount * log.multiplier,
+                    4,
+                ),
+                "input_unit": log.input_unit or version.basis_unit,
                 "consumed_at": local_time.isoformat(),
+                "voided_at": (
+                    _utc_aware(log.voided_at).astimezone(tz).isoformat()
+                    if log.voided_at is not None
+                    else None
+                ),
+                "portion_options": portion_options(version),
                 "kcal": _number(log.kcal),
                 "carbs_g": _number(log.carbs_g),
                 "protein_g": _number(log.protein_g),
@@ -124,6 +140,7 @@ async def build_dashboard_data(
 
     history_logs: Sequence[IntakeLog] = []
     recent_logs: Sequence[IntakeLog] = []
+    voided_logs: Sequence[IntakeLog] = []
     if user is not None:
         history_logs = (
             await session.scalars(
@@ -144,6 +161,18 @@ async def build_dashboard_data(
                 )
                 .order_by(IntakeLog.consumed_at.desc())
                 .limit(RECENT_LOG_LIMIT)
+            )
+        ).all()
+        voided_logs = (
+            await session.scalars(
+                select(IntakeLog)
+                .options(joinedload(IntakeLog.product_version).joinedload(ProductVersion.product))
+                .where(
+                    IntakeLog.user_telegram_id == owner_telegram_id,
+                    IntakeLog.voided_at.is_not(None),
+                )
+                .order_by(IntakeLog.voided_at.desc())
+                .limit(VOIDED_LOG_LIMIT)
             )
         ).all()
 
@@ -180,4 +209,5 @@ async def build_dashboard_data(
         },
         "days": list(daily.values()),
         "recent": _serialize_recent(recent_logs, tz),
+        "voided_recent": _serialize_recent(voided_logs, tz),
     }

@@ -23,6 +23,7 @@ licenses. The direct runtime dependencies declared at the time of this notice in
 | HTTPX | BSD-3-Clause |
 | OpenAI Python SDK | Apache-2.0 |
 | Pillow | MIT-CMU |
+| PyJWT and cryptography | MIT / Apache-2.0 or BSD-3-Clause |
 | Pydantic and pydantic-settings | MIT |
 | SQLAlchemy | MIT |
 | Uvicorn | BSD-3-Clause |

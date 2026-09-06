@@ -145,9 +145,11 @@ ssh -N -L 18080:127.0.0.1:8080 calorie-server
 # 브라우저에서 http://127.0.0.1:18080/dashboard
 ```
 
-대시보드는 `.env`의 `OWNER_TELEGRAM_ID` 사용자만 조회하고 데이터를 수정하지 않습니다. 화면에는
-오늘 kcal·탄단지 목표와 달성률, 최근 7일·30일 열량 추이, 최근 12건의 섭취량과 영양정보 출처가
-표시됩니다. 60초마다 자동 갱신되며 즉시 반영하려면 `새로고침`을 누르면 됩니다.
+대시보드는 `.env`의 `OWNER_TELEGRAM_ID` 사용자만 조회합니다. 화면에는 오늘 kcal·탄단지 목표와
+달성률, 최근 7일·30일 열량 추이, 최근 12건의 섭취량과 영양정보 출처가 표시됩니다. 60초마다
+자동 갱신되며 즉시 반영하려면 `새로고침`을 누르면 됩니다. 기본 설정에서는 읽기 전용이고,
+아래 Cloudflare Access 토큰 검증을 완료하면 저장된 상품 검색·섭취 기록, 직접 영양정보 입력,
+최근 기록의 섭취량·시각 수정, 취소·복원, 일일 목표 수정을 웹에서 사용할 수 있습니다.
 
 ### Cloudflare Access로 외부에서 접속
 
@@ -165,6 +167,29 @@ Tunnel을 먼저 공개하면 Access 정책을 적용하기 전까지 페이지�
 docker compose --profile tunnel up -d cloudflared
 docker compose --profile tunnel logs -f cloudflared
 ```
+
+웹 수정 기능은 Tunnel을 통과했다는 사실만 신뢰하지 않고, 원본 서버에서도 Access가 전달한 JWT의
+RS256 서명·발급자·애플리케이션 AUD·허용 이메일을 모두 확인합니다. Cloudflare Zero Trust의
+해당 Access 애플리케이션에서 `Application Audience (AUD) Tag`를 복사하고 다음 값을 `.env`에
+추가한 뒤 봇 컨테이너를 다시 빌드합니다. Team domain은
+`https://팀이름.cloudflareaccess.com` 형식입니다.
+
+```dotenv
+DASHBOARD_WRITES_ENABLED=true
+CLOUDFLARE_ACCESS_TEAM_DOMAIN=https://팀이름.cloudflareaccess.com
+CLOUDFLARE_ACCESS_AUD=해당_애플리케이션_AUD_태그
+CLOUDFLARE_ACCESS_ALLOWED_EMAIL=Access_정책에_허용한_소유자_이메일
+```
+
+```bash
+docker compose up -d --build bot
+```
+
+값이 하나라도 없거나 JWT 검증에 실패하면 웹 수정 API는 잠긴 상태를 유지합니다. SSH 터널로 연
+HTTP 화면은 계속 조회할 수 있지만 Access 헤더가 없으므로 수정할 수 없습니다. 변경 요청에는
+같은 출처 확인과 1시간짜리 CSRF 토큰을 추가로 요구하고, 새 섭취 기록에는 중복 제출 방지 ID를
+저장합니다. 취소는 행을 삭제하지 않는 소프트 취소 방식이어서 웹의 `취소된 기록`에서 복원할 수
+있습니다.
 
 `.env.tunnel`은 `cloudflared`만 읽고 봇 컨테이너에는 전달되지 않습니다. `cloudflared`는 Compose
 내부 네트워크로 `bot:8080`에 접근하며 호스트에 새 포트를 열지 않습니다.
