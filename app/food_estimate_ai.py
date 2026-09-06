@@ -15,7 +15,7 @@ from app.schemas import RecipeIngredientInput, StrictModel
 
 logger = logging.getLogger(__name__)
 
-FOOD_ESTIMATE_VERSION = "food-estimate-v1"
+FOOD_ESTIMATE_VERSION = "food-estimate-v2"
 
 
 class FoodEstimateError(ValueError):
@@ -181,8 +181,10 @@ _INSTRUCTIONS = (
     "recognizable food, set supported=false and return no ingredients. For supported foods, use "
     "simple Korean generic ingredient names suitable for lookup in the Korean MFDS food database. "
     "Give plausible cooked edible amounts for exactly one typical restaurant serving, using only "
-    "g or ml. Include calorie-relevant cooking oil, dressing, and sauce when typical, but omit "
-    "trace spices and water. Prefer 3-8 major ingredients and never exceed the configured limit. "
+    "g or ml. Use g for solid foods and ml for pourable liquids such as cooking oil, liquid "
+    "dressing, and liquid sauce; never express a liquid in g or a solid in ml. Include "
+    "calorie-relevant cooking oil, dressing, and sauce when typical, but omit trace spices and "
+    "water. Prefer 3-8 major ingredients and never exceed the configured limit. "
     "State up to four short assumptions, and set uncertainty_percent from 15 to 50 to reflect "
     "portion and recipe variability. Provide only neutral Korean and Japanese food-name aliases; "
     "never include health, diet, or weight-loss claims."

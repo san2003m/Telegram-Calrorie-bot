@@ -526,6 +526,27 @@ def _rank_food_versions(query: str, versions: list) -> list:
     )
 
 
+def _first_compatible_recipe_version(
+    query: str,
+    ingredient,
+    versions: list,
+    *,
+    minimum_score: int | None = None,
+):
+    for version in _rank_food_versions(query, versions):
+        if (
+            minimum_score is not None
+            and food_match_score(query, version.product.name) < minimum_score
+        ):
+            continue
+        try:
+            ingredient_multiplier(version, ingredient)
+        except RecipeError:
+            continue
+        return version
+    return None
+
+
 def _confirmation_keyboard(job_id: int, market: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -898,14 +919,13 @@ async def _resolve_recipe(
                 terms=search_terms(ingredient.name),
             )
             ranked = _rank_food_versions(ingredient.name, cached)
-            version = next(
-                (
-                    item
-                    for item in ranked
-                    if food_match_score(ingredient.name, item.product.name) >= 900
-                ),
-                None,
+            version = _first_compatible_recipe_version(
+                ingredient.name,
+                ingredient,
+                ranked,
+                minimum_score=900,
             )
+            catalog_versions: list = []
             catalog_error: str | None = None
             if version is None and context.food_catalog is not None:
                 try:
@@ -914,13 +934,27 @@ async def _resolve_recipe(
                     candidates = []
                     catalog_error = str(exc)
                 if candidates:
-                    versions = [
+                    catalog_versions = [
                         await get_or_create_catalog_product(session, candidate)
                         for candidate in candidates
                     ]
-                    version = _rank_food_versions(ingredient.name, versions)[0]
+                    version = _first_compatible_recipe_version(
+                        ingredient.name,
+                        ingredient,
+                        catalog_versions,
+                    )
             if version is None and ranked:
-                version = ranked[0]
+                version = _first_compatible_recipe_version(
+                    ingredient.name,
+                    ingredient,
+                    ranked,
+                )
+            if version is None:
+                fallback_versions = _rank_food_versions(
+                    ingredient.name,
+                    [*catalog_versions, *ranked],
+                )
+                version = fallback_versions[0] if fallback_versions else None
             if version is None:
                 detail = f" ({catalog_error})" if catalog_error else ""
                 errors.append(f"{ingredient.name}: 식품 DB에서 찾지 못했습니다.{detail}")

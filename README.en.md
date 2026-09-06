@@ -329,8 +329,9 @@ of inventing a piece weight. Cooking method, moisture, and actual size can still
 For a dish such as `케밥 랩` or `ケバブ ラップ` with no suitable database match, explicitly press
 the AI-estimate button below the results. The model does not browse or invent nutrition numbers. It
 treats the input only as a dish name and proposes major ingredients with `g` or `ml` amounts for one
-typical serving; Python then calculates calories and macros from the existing food database. Review
-the meat, size, and sauce assumptions, every ingredient match, the central estimate, and its
+typical serving; Python then calculates calories and macros from the existing food database, matching
+solid ingredients in grams and pourable oils or sauces in milliliters. Review the meat, size, and
+sauce assumptions, every ingredient match, the central estimate, and its
 variation range before saving it as a private food. The same query then reuses the saved item without
 another AI call. Add distinguishing details to the `/food` query or enter actual amounts with
 `/recipe` when you need a more specific estimate.

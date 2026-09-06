@@ -13,6 +13,7 @@ from app.telegram import (
     _can_correct_basis_unit,
     _candidate_from_recognition,
     _candidate_with_basis_unit,
+    _first_compatible_recipe_version,
     _food_estimate_candidate,
     _food_estimate_draft_text,
     _food_results_keyboard,
@@ -445,6 +446,38 @@ def test_food_results_keyboard_offers_explicit_ai_fallback() -> None:
 
     assert keyboard.inline_keyboard[0][0].callback_data == "food:10"
     assert keyboard.inline_keyboard[-1][0].callback_data == "food_estimate_start:request123"
+
+
+def test_recipe_matching_prefers_a_unit_compatible_food_version() -> None:
+    common = {
+        "basis_amount": Decimal("100"),
+        "package_amount": None,
+        "package_unit": None,
+        "servings_per_package": None,
+        "piece_count": None,
+        "basis_count_amount": None,
+    }
+    liquid = SimpleNamespace(
+        **common,
+        id=10,
+        basis_unit="ml",
+        product=SimpleNamespace(name="양파"),
+    )
+    solid = SimpleNamespace(
+        **common,
+        id=11,
+        basis_unit="g",
+        product=SimpleNamespace(name="양파"),
+    )
+    ingredient = RecipeIngredientInput(
+        name="양파",
+        amount=Decimal("30"),
+        unit="g",
+    )
+
+    selected = _first_compatible_recipe_version("양파", ingredient, [liquid, solid])
+
+    assert selected is solid
 
 
 def test_food_estimate_candidate_is_private_unverified_and_searchable_in_japanese() -> None:

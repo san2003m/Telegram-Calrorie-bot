@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.food_estimate_ai import (
+    FOOD_ESTIMATE_VERSION,
     FoodEstimateError,
     FoodEstimatePlan,
     FoodEstimatePlanner,
@@ -41,6 +42,7 @@ def test_food_estimate_schema_is_strict_and_bounded() -> None:
 
 
 def test_food_estimate_query_is_normalized_bounded_and_versioned() -> None:
+    assert FOOD_ESTIMATE_VERSION == "food-estimate-v2"
     assert normalize_food_estimate_query("  ｹﾊﾞﾌﾞ   ﾗｯﾌﾟ ", max_chars=80) == "ケバブ ラップ"
     assert food_estimate_query_hash("케밥  랩") == food_estimate_query_hash("케밥 랩")
 
@@ -99,6 +101,7 @@ async def test_food_estimate_call_has_no_tools_and_hard_output_limit() -> None:
     assert kwargs["max_output_tokens"] == 600
     assert kwargs["tools"] == []
     assert kwargs["tool_choice"] == "none"
+    assert "Use g for solid foods and ml for pourable liquids" in kwargs["instructions"]
     assert kwargs["text"]["format"]["strict"] is True
     assert kwargs["text"]["format"]["schema"]["properties"]["ingredients"]["maxItems"] == 12
     assert result.total_tokens == 380
