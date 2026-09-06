@@ -63,7 +63,7 @@ def configure_logging(
 
 def _restrict_file(path: Path) -> None:
     try:
-        path.chmod(0o600)
+        path.chmod(0o640)
     except OSError:
         # Logging must remain available on filesystems that do not support POSIX modes.
         pass

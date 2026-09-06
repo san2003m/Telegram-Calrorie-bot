@@ -70,7 +70,9 @@ class Settings(BaseSettings):
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.uploads_dir.mkdir(parents=True, exist_ok=True)
         self.logs_dir.mkdir(parents=True, exist_ok=True)
-        self.logs_dir.chmod(0o700)
+        # Keep logs private to the owning user and group. The setgid bit makes
+        # rotated files inherit the host-readable group on bind-mounted paths.
+        self.logs_dir.chmod(0o2750)
 
 
 @lru_cache

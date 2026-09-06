@@ -29,7 +29,8 @@ def test_logging_writes_to_console_and_rotating_persistent_files(tmp_path) -> No
     assert settings.log_file.exists()
     assert len(files) == 3
     assert "persistent log entry 99" in stream.getvalue()
-    assert settings.log_file.stat().st_mode & 0o777 == 0o600
+    assert settings.log_file.stat().st_mode & 0o777 == 0o640
+    assert settings.logs_dir.stat().st_mode & 0o777 == 0o750
 
     for handler in logger.handlers[:]:
         logger.removeHandler(handler)

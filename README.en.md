@@ -233,10 +233,13 @@ CALORIE_LOG_DIR=/home/my-user/var/calorie-bot/logs
 ```
 
 Initialize a newly connected host directory so that the container's dedicated user can write it:
+also assign the server user's primary group ID. The directory stays at mode `2750` and log files
+at `0640`, allowing read access only to that group.
 
 ```bash
 mkdir -p "${CALORIE_LOG_DIR:-./runtime/logs}"
-docker compose run --rm --no-deps --user root bot chown -R calorie:calorie /data/logs
+docker compose run --rm --no-deps --user root bot \
+  chown -R "calorie:$(id -g)" /data/logs
 ```
 
 ```bash

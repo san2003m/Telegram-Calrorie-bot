@@ -223,10 +223,13 @@ CALORIE_LOG_DIR=/home/my-user/var/calorie-bot/logs
 ```
 
 처음 연결하는 호스트 디렉터리는 컨테이너의 전용 사용자가 쓸 수 있게 초기화합니다.
+Docker 밖에서 읽을 서버 사용자의 기본 그룹 ID도 같이 지정하면 디렉터리는 `2750`,
+로그 파일은 `0640`으로 유지되어 그 그룹만 읽을 수 있습니다.
 
 ```bash
 mkdir -p "${CALORIE_LOG_DIR:-./runtime/logs}"
-docker compose run --rm --no-deps --user root bot chown -R calorie:calorie /data/logs
+docker compose run --rm --no-deps --user root bot \
+  chown -R "calorie:$(id -g)" /data/logs
 ```
 
 ```bash
