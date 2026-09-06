@@ -220,11 +220,13 @@ docker compose up -d --build
 
 ```dotenv
 CALORIE_LOG_DIR=/home/my-user/var/calorie-bot/logs
+CALORIE_LOG_GID=1000
 ```
 
 처음 연결하는 호스트 디렉터리는 컨테이너의 전용 사용자가 쓸 수 있게 초기화합니다.
 Docker 밖에서 읽을 서버 사용자의 기본 그룹 ID도 같이 지정하면 디렉터리는 `2750`,
-로그 파일은 `0640`으로 유지되어 그 그룹만 읽을 수 있습니다.
+로그 파일은 `0640`으로 유지되어 그 그룹만 읽을 수 있습니다. `CALORIE_LOG_GID`는
+서버에서 `id -g`로 확인하며 설정하지 않으면 `1000`을 사용합니다.
 
 ```bash
 mkdir -p "${CALORIE_LOG_DIR:-./runtime/logs}"

@@ -230,11 +230,13 @@ are retained. Docker's own standard-output logs are also limited to three 10 MiB
 
 ```dotenv
 CALORIE_LOG_DIR=/home/my-user/var/calorie-bot/logs
+CALORIE_LOG_GID=1000
 ```
 
 Initialize a newly connected host directory so that the container's dedicated user can write it:
 also assign the server user's primary group ID. The directory stays at mode `2750` and log files
-at `0640`, allowing read access only to that group.
+at `0640`, allowing read access only to that group. Set `CALORIE_LOG_GID` to the output of `id -g`
+on the server; it defaults to `1000` when omitted.
 
 ```bash
 mkdir -p "${CALORIE_LOG_DIR:-./runtime/logs}"
